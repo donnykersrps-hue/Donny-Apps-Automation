@@ -9,6 +9,11 @@ import folium
 from streamlit_folium import st_folium
 import openpyxl
 import requests
+import math
+import shutil
+import tempfile
+from shapely.geometry import LineString
+from pyproj import Transformer
 
 # Konfigurasi Halaman Streamlit
 st.set_page_config(
@@ -17,48 +22,40 @@ st.set_page_config(
     layout="wide"
 )
 
-def convert_dms_to_dd(dms_str):
-    """Mengubah format DMS (2°43'17.98"S, 102°54'36.1"E) ke Decimal Degrees."""
-    try:
-        parts = dms_str.split(',')
-        if len(parts) != 2:
-            return None, None
+_api_cache = {}
+
+def decimal_to_dms(lat, lon):
+    """Konversi koordinat desimal ke format DMS presisi."""
+    if lat is None or lon is None or pd.isna(lat) or pd.isna(lon): return ""
+    lat_dir, lat_abs = ('N', abs(lat)) if lat >= 0 else ('S', abs(lat))
+    lat_d = int(lat_abs)
+    lat_m = int((lat_abs - lat_d) * 60)
+    lat_s = round((lat_abs - lat_d - lat_m/60) * 3600, 2)
+    if lat_s >= 60.0: lat_s, lat_m = lat_s - 60.0, lat_m + 1
+    if lat_m >= 60: lat_m, lat_d = lat_m - 60, lat_d + 1
         
-        lat_part = parts[0].strip()
-        lon_part = parts[1].strip()
+    lon_dir, lon_abs = ('E', abs(lon)) if lon >= 0 else ('W', abs(lon))
+    lon_d = int(lon_abs)
+    lon_m = int((lon_abs - lon_d) * 60)
+    lon_s = round((lon_abs - lon_d - lon_m/60) * 3600, 2)
+    if lon_s >= 60.0: lon_s, lon_m = lon_s - 60.0, lon_m + 1
+    if lon_m >= 60: lon_m, lon_d = lon_m - 60, lon_d + 1
+        
+    return f'{lat_d}°{lat_m}\'{lat_s}"{lat_dir}, {lon_d}°{lon_m}\'{lon_s}"{lon_dir}'
 
-        def parse_single_dms(s):
-            match = re.search(r"(\d+)°\s*(\d+)['\']\s*([\d.]+)\"\s*([NSEWnsew])", s)
-            if not match:
-                return None
-            deg, m, sec, direction = match.groups()
-            dd = float(deg) + float(m)/60 + float(sec)/3600
-            if direction.upper() in ['S', 'W']:
-                dd = -dd
-            return dd
+def get_utm_epsg(lon, lat):
+    zone_number = int((lon + 180) / 6) + 1
+    return f"EPSG:326{zone_number:02d}" if lat >= 0 else f"EPSG:327{zone_number:02d}"
 
-        lat = parse_single_dms(lat_part)
-        lon = parse_single_dms(lon_part)
-        return lat, lon
-    except Exception:
-        return None, None
-
-def format_dd_to_dms(lat, lon):
-    """Mengubah desimal latitude/longitude kembali ke format DMS standar."""
-    def dd_to_dms_single(val, is_lat):
-        direction = 'S' if is_lat and val < 0 else ('N' if is_lat else ('W' if val < 0 else 'E'))
-        val = abs(val)
-        degrees = int(val)
-        minutes_float = (val - degrees) * 60
-        minutes = int(minutes_float)
-        seconds = round((minutes_float - minutes) * 60, 2)
-        return f"{degrees}°{minutes}'{seconds}\"{direction}"
-    
-    return f"{dd_to_dms_single(lat, True)}, {dd_to_dms_single(lon, False)}"
+def calculate_deflection_angle(p1, p2, p3):
+    v1_x, v1_y = p2[0] - p1[0], p2[1] - p1[1]
+    v2_x, v2_y = p3[0] - p2[0], p3[1] - p2[1]
+    b1 = math.degrees(math.atan2(v1_y, v1_x))
+    b2 = math.degrees(math.atan2(v2_y, v2_x))
+    diff = abs(b1 - b2)
+    return 360 - diff if diff > 180 else diff
 
 def extract_kml_from_kmz_bytes(kmz_bytes):
-    """Mengekstrak file doc.kml dari data file KMZ di memori."""
-    import tempfile
     temp_dir = tempfile.mkdtemp()
     kmz_path = os.path.join(temp_dir, "temp.kmz")
     with open(kmz_path, "wb") as f:
@@ -71,26 +68,32 @@ def extract_kml_from_kmz_bytes(kmz_bytes):
     return kml_path, temp_dir
 
 def parse_kml_all_linestrings(kml_path):
-    """Membaca seluruh koordinat jalur linestring dari file KML."""
     tree = ET.parse(kml_path)
-    root = tree.getroot()
-    ns = {'kml': 'http://www.opengis.net/kml/2.2'}
-    
-    coordinates_points = []
-    for coord_elem in root.findall('.//kml:LineString/kml:coordinates', ns):
-        text = coord_elem.text
-        if text:
-            raw_coords = text.strip().split()
-            for item in raw_coords:
-                parts = item.split(',')
-                if len(parts) >= 2:
-                    lon = float(parts[0])
-                    lat = float(parts[1])
-                    coordinates_points.append((lon, lat))
-    return coordinates_points
+    all_coords = []
+    clean_tag = lambda tag: tag.split('}')[-1] if '}' in tag else tag
+    for elem in tree.getroot().iter():
+        if clean_tag(elem.tag) == 'LineString':
+            for child in elem.iter():
+                if clean_tag(child.tag) == 'coordinates' and child.text:
+                    for pt in child.text.strip().replace('\n', ' ').split():
+                        parts = pt.split(',')
+                        if len(parts) >= 2:
+                            try:
+                                lon, lat = float(parts[0]), float(parts[1])
+                                if not all_coords or all_coords[-1] != (lon, lat):
+                                    all_coords.append((lon, lat))
+                            except ValueError: continue
+                    break
+    return all_coords
 
-def reverse_geocode_photon(lat, lon):
-    """Layanan reverse geocoding cepat menggunakan Photon API OpenStreetMap."""
+def get_accurate_road_info(lat, lon):
+    coord_key = (round(lat, 5), round(lon, 5))
+    if coord_key in _api_cache: return _api_cache[coord_key]
+
+    road_name = "Jalan Belum Terdata (OSM)"
+    authority = "Kota"
+    instansi = "Dinas PUPR Kota/Kabupaten"
+
     try:
         url = f"https://photon.komoot.io/reverse?lon={lon}&lat={lat}"
         headers = {'User-Agent': 'KMZRoadAutomationApp/1.0'}
@@ -98,72 +101,99 @@ def reverse_geocode_photon(lat, lon):
         if res.status_code == 200:
             data = res.json()
             if data and 'features' in data and len(data['features']) > 0:
-                props = data['features'][0]['properties']
-                road_name = props.get('name', '')
-                district = props.get('district', props.get('suburb', ''))
-                city = props.get('city', props.get('county', ''))
-                state = props.get('state', '')
-                return road_name, district, city, state
-    except Exception:
-        pass
-    return "", "", "", ""
+                props = data['features'][0].get('properties', {})
+                highway_type = props.get('highway', '')
+                
+                road = props.get('street') or props.get('name') or props.get('highway')
+                if road: road_name = str(road).title()
+                else:
+                    if props.get('village'): road_name = f"Jalan Akses {str(props.get('village')).title()}"
+                    elif props.get('county'): road_name = f"Kawasan {str(props.get('county')).title()}"
+                
+                name_lower = road_name.lower()
+                
+                if any(kw in name_lower for kw in ['lintas', 'nasional', 'raya ']) or highway_type in ['trunk', 'primary', 'motorway']:
+                    authority, instansi = "Provinsi", "Dinas PUPR Provinsi"
+                elif "belum terdata" in name_lower or "akses" in name_lower or "gang " in name_lower or highway_type in ['track', 'path', 'unclassified']:
+                    authority, instansi = "Desa", "Pemerintah Desa"
+                else:
+                    authority, instansi = "Kota", "Dinas PUPR Kota/Kabupaten"
+            
+            result = (road_name, authority, instansi)
+            _api_cache[coord_key] = result
+            return result
+    except Exception: 
+        return (road_name, authority, instansi)
 
-def process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_text):
-    """Memproses satu file KMZ dan menguraikannya menjadi segmen laporan Excel."""
+def process_single_kmz(kmz_bytes, spk, ring_id, area_name):
     kml_path, temp_dir = extract_kml_from_kmz_bytes(kmz_bytes)
-    points = parse_kml_all_linestrings(kml_path)
-    
-    import shutil
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    
-    if not points:
-        return []
-    
-    # Hitung total panjang jalur (pembagian kasar sederhana)
-    from math import radians, cos, sin, asin, sqrt
-    def haversine(lon1, lat1, lon2, lat2):
-        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-        dlon = lon2 - lon1 
-        dlat = lat2 - lat1 
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-        c = 2 * asin(sqrt(a)) 
-        r = 6371000 # Radius bumi dalam meter
-        return c * r
+    try:
+        points = parse_kml_all_linestrings(kml_path)
+        if len(points) < 2: return [], []
 
-    total_len = 0.0
-    for i in range(len(points) - 1):
-        total_len += haversine(points[i][0], points[i][1], points[i+1][0], points[i+1][1])
+        transformer = Transformer.from_crs("EPSG:4326", get_utm_epsg(points[0][0], points[0][1]), always_xy=True)
+        segments_data = []
+        seg_points_list = []
+        seg_start_idx, last_api_idx = 0, 0
         
-    start_pt = points[0]
-    end_pt = points[-1]
-    
-    start_dms = format_dd_to_dms(start_pt[1], start_pt[0])
-    end_dms = format_dd_to_dms(end_pt[1], end_pt[0])
-    
-    mid_idx = len(points) // 2
-    road_name, district, city, state = reverse_geocode_photon(points[mid_idx][1], points[mid_idx][0])
-    if not road_name:
-        road_name = f"Ruas Jalan {ring_id}"
+        current_road, current_auth, current_instansi = get_accurate_road_info(points[0][1], points[0][0])
+        
+        i = 1
+        while i < len(points):
+            lon, lat = points[i]
+            cur_utm = transformer.transform(lon, lat)
+            last_utm = transformer.transform(points[last_api_idx][0], points[last_api_idx][1])
+            
+            is_sharp = calculate_deflection_angle(points[i-1], points[i], points[i+1]) > 30 if i < len(points)-1 else False
+            dist = math.hypot(cur_utm[0] - last_utm[0], cur_utm[1] - last_utm[1])
+            
+            if (i == len(points) - 1) or is_sharp or dist >= 50:
+                chk_road, chk_auth, chk_inst = get_accurate_road_info(lat, lon)
+                
+                if chk_road and chk_road != current_road:
+                    cut_idx = i
+                    for j in range(last_api_idx + 1, i):
+                        m_road, m_auth, m_inst = get_accurate_road_info(points[j][1], points[j][0])
+                        if m_road and m_road != current_road:
+                            cut_idx, chk_road, chk_auth, chk_inst = j, m_road, m_auth, m_inst
+                            break
+                    
+                    seg_pts = points[seg_start_idx : cut_idx + 1]
+                    if len(seg_pts) > 1:
+                        line_utm = LineString([transformer.transform(pt[0], pt[1]) for pt in seg_pts])
+                        segments_data.append({
+                            "SPK": spk, "Ring ID": ring_id, "Destination": area_name if area_name else "Nasional",
+                            "Area": "Sektor Wilayah", "Authority Ruas Jalan": current_auth, "Instansi": current_instansi,
+                            "Nama Ruas Jalan Implementasi": current_road, "Panjang Ruas Jalan (Meter)": round(line_utm.length, 2),
+                            "Status Cable": "New Cable", "Titik Koordinat Awal": decimal_to_dms(seg_pts[0][1], seg_pts[0][0]),
+                            "Titik Koordinat Akhir": decimal_to_dms(seg_pts[-1][1], seg_pts[-1][0]), "Status Survey": "Done Survey"
+                        })
+                        seg_points_list.append(seg_pts)
+                    
+                    current_road, current_auth, current_instansi = chk_road, chk_auth, chk_inst
+                    seg_start_idx = cut_idx
+                    last_api_idx = cut_idx
+                    i = cut_idx + 1
+                    continue
+                last_api_idx = i
+            i += 1
 
-    dest = area_name if area_name else "Nasional"
-    area = f"{district}, {city}".strip(", ") if (district or city) else "Sektor Wilayah"
-    
-    segment = {
-        "SPK": spk,
-        "Ring ID": ring_id,
-        "Destination": dest,
-        "Area": area,
-        "Authority Ruas Jalan": "Non Status",
-        "Instansi": "Pemerintah Daerah",
-        "Nama Ruas Jalan Implementasi": road_name,
-        "Panjang Ruas Jalan (Meter)": round(total_len, 2),
-        "Status Cable": "New Cable",
-        "Titik Koordinat Awal": start_dms,
-        "Titik Koordinat Akhir": end_dms,
-        "Status Survey": "Done Survey"
-    }
-    
-    return [segment]
+        if seg_start_idx < len(points) - 1:
+            seg_pts = points[seg_start_idx : len(points)]
+            if len(seg_pts) > 1:
+                line_utm = LineString([transformer.transform(pt[0], pt[1]) for pt in seg_pts])
+                segments_data.append({
+                    "SPK": spk, "Ring ID": ring_id, "Destination": area_name if area_name else "Nasional",
+                    "Area": "Sektor Wilayah", "Authority Ruas Jalan": current_auth, "Instansi": current_instansi,
+                    "Nama Ruas Jalan Implementasi": current_road, "Panjang Ruas Jalan (Meter)": round(line_utm.length, 2),
+                    "Status Cable": "New Cable", "Titik Koordinat Awal": decimal_to_dms(seg_pts[0][1], seg_pts[0][0]),
+                    "Titik Koordinat Akhir": decimal_to_dms(seg_pts[-1][1], seg_pts[-1][0]), "Status Survey": "Done Survey"
+                })
+                seg_points_list.append(seg_pts)
+
+        return segments_data, seg_points_list
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 # Tampilan Antarmuka Streamlit
 st.title("🛣️ Otomatisasi Rekap Ruas Jalan KMZ")
@@ -178,6 +208,7 @@ if uploaded_files:
         progress_bar = st.progress(0)
         status_text = st.empty()
         all_master_data = []
+        all_map_lines = []
 
         for index, uploaded_file in enumerate(uploaded_files, 1):
             basename = os.path.splitext(uploaded_file.name)[0]
@@ -197,12 +228,13 @@ if uploaded_files:
                 ring_id = full_code
 
             progress_bar.progress((index - 1) / len(uploaded_files))
-            status_text.text(f"[{index}/{len(uploaded_files)}] Memproses {spk} - {ring_id}...")
+            status_text.text(f"[{index}/{len(uploaded_files)}] Memindai ruas jalan {spk} - {ring_id}...")
 
             try:
                 kmz_bytes = uploaded_file.read()
-                segments = process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_text)
+                segments, seg_points_list = process_single_kmz(kmz_bytes, spk, ring_id, area_name)
                 all_master_data.extend(segments)
+                all_map_lines.extend(seg_points_list)
             except Exception as e:
                 st.error(f"Gagal memproses file {uploaded_file.name}: {e}")
 
@@ -216,67 +248,62 @@ if uploaded_files:
                 "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
             ]
             df_master = pd.DataFrame(all_master_data, columns=columns)
-
-            # Export ke Excel via Memory Buffer
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_master.to_excel(writer, index=False, sheet_name='Master Data')
-                ws = writer.sheets['Master Data']
-                ws.views.sheetView[0].showGridLines = True
-                
-                hdr_fill = openpyxl.styles.PatternFill(start_color="003366", end_color="003366", fill_type="solid")
-                hdr_font = openpyxl.styles.Font(name="Arial", size=10, bold=True, color="FFFFFF")
-                border = openpyxl.styles.Border(
-                    left=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                    right=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                    top=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                    bottom=openpyxl.styles.Side(style='thin', color='D9D9D9')
-                )
-                
-                for col_num in range(1, 13):
-                    cell = ws.cell(row=1, column=col_num)
-                    cell.fill, cell.font, cell.border = hdr_fill, hdr_font, border
-                    cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
-                    
-                for row in range(2, len(df_master) + 2):
-                    for col in range(1, 13):
-                        cell = ws.cell(row=row, column=col)
-                        cell.border = border
-                        if col == 8:
-                            cell.number_format = '#,##0.00'
-                            cell.alignment = openpyxl.styles.Alignment(horizontal="right")
-                        elif col in [1, 2, 5, 9, 10, 11, 12]:
-                            cell.alignment = openpyxl.styles.Alignment(horizontal="center")
-                        else:
-                            cell.alignment = openpyxl.styles.Alignment(horizontal="left")
-                            
-                widths = {'A':10, 'B':16, 'C':15, 'D':22, 'E':20, 'F':25, 'G':35, 'H':25, 'I':15, 'J':30, 'K':30, 'L':18}
-                for col_letter, width in widths.items():
-                    ws.column_dimensions[col_letter].width = width
-
-            output.seek(0)
-            
-            # Simpan data ke memori sementara (session_state) agar tidak ter-reset saat klik tombol unduh
             st.session_state["df_master"] = df_master
-            st.session_state["excel_bytes"] = output.getvalue()
+            st.session_state["all_map_lines"] = all_map_lines
             st.session_state["processed"] = True
 
 # Tampilkan Hasil Pemrosesan jika data tersimpan di session_state
 if st.session_state.get("processed", False):
     st.success("✅ Selesai! File Master Excel berhasil dibuat.")
 
-    # Tombol Unduh Hasil
+    # Export ke Excel via Memory Buffer
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        st.session_state["df_master"].to_excel(writer, index=False, sheet_name='Master Data')
+        ws = writer.sheets['Master Data']
+        ws.views.sheetView[0].showGridLines = True
+        
+        hdr_fill = openpyxl.styles.PatternFill(start_color="003366", end_color="003366", fill_type="solid")
+        hdr_font = openpyxl.styles.Font(name="Arial", size=10, bold=True, color="FFFFFF")
+        border = openpyxl.styles.Border(
+            left=openpyxl.styles.Side(style='thin', color='D9D9D9'), right=openpyxl.styles.Side(style='thin', color='D9D9D9'),
+            top=openpyxl.styles.Side(style='thin', color='D9D9D9'), bottom=openpyxl.styles.Side(style='thin', color='D9D9D9')
+        )
+        
+        for col_num in range(1, 13):
+            cell = ws.cell(row=1, column=col_num)
+            cell.fill, cell.font, cell.border = hdr_fill, hdr_font, border
+            cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+            
+        for row in range(2, len(st.session_state["df_master"]) + 2):
+            for col in range(1, 13):
+                cell = ws.cell(row=row, column=col)
+                cell.border = border
+                if col == 8:
+                    cell.number_format = '#,##0.00'
+                    cell.alignment = openpyxl.styles.Alignment(horizontal="right")
+                elif col in [1, 2, 5, 9, 10, 11, 12]:
+                    cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+                else:
+                    cell.alignment = openpyxl.styles.Alignment(horizontal="left")
+                    
+        widths = {'A':10, 'B':16, 'C':15, 'D':22, 'E':20, 'F':25, 'G':35, 'H':25, 'I':15, 'J':30, 'K':30, 'L':18}
+        for col_letter, width in widths.items(): ws.column_dimensions[col_letter].width = width
+
+    output.seek(0)
+
+    # TOMBOL UNDUH EXCEL
     st.download_button(
         label="📥 Unduh File Excel Master",
-        data=st.session_state["excel_bytes"],
+        data=output.getvalue(),
         file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
     )
 
-    # Preview Tabel Master Excel (Dibuat Multi-Select dengan Centang)
+    # PREVIEW TABEL MASTER EXCEL (CENTANG MULTI-ROW)
     st.subheader("📊 Preview Tabel Master Excel (Centang baris untuk menampilkan jalur di peta)")
     
-    # Menampilkan tabel interaktif dengan mode centang banyak baris (multi-row)
     event = st.dataframe(
         st.session_state["df_master"],
         on_select="rerun",
@@ -284,97 +311,63 @@ if st.session_state.get("processed", False):
         use_container_width=True
     )
 
-    # Preview Peta Interaktif (Folium)
-    st.subheader("🗺️ Preview Peta Ruas Jalan & Titik Koordinat")
+    # PREVIEW PETA INTERAKTIF
+    st.subheader("🗺️ Preview Peta Ruas Jalan Interaktif")
     try:
-        uploaded_files[0].seek(0)
-        kml_p, temp_d = extract_kml_from_kmz_bytes(uploaded_files[0].read())
-        map_points = parse_kml_all_linestrings(kml_p)
-        import shutil
-        shutil.rmtree(temp_d, ignore_errors=True)
-
-        if map_points and len(map_points) > 0:
+        all_lines = st.session_state.get("all_map_lines", [])
+        if all_lines:
             selected_rows = event.selection.get("rows", [])
-            total_seg = len(st.session_state["df_master"])
-            pts_per_seg = max(1, len(map_points) // total_seg)
 
-            # Titik tengah peta bawaan
-            center_lat = map_points[len(map_points)//2][1]
-            center_lon = map_points[len(map_points)//2][0]
+            first_pt = all_lines[0][0]
+            m = folium.Map(location=[first_pt[1], first_pt[0]], zoom_start=15, tiles=None)
             
-            # Buat Objek Peta Folium
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
-            
-            # Jika ada baris-baris yang dicentang pada tabel
+            folium.TileLayer('OpenStreetMap', name='Peta Jalan Standar').add_to(m)
+            folium.TileLayer(
+                tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+                attr='Google Hybrid',
+                name='Satelit + Teks Nama Jalan (Google Earth)'
+            ).add_to(m)
+
             if selected_rows:
                 selected_names = []
-                last_center_lat, last_center_lon = center_lat, center_lon
-                
-                # Loop untuk setiap baris yang dicentang user
                 for r_idx in selected_rows:
-                    row_data = st.session_state["df_master"].iloc[r_idx]
-                    selected_names.append(row_data["Nama Ruas Jalan Implementasi"])
-                    
-                    # Potong koordinat khusus untuk ruas yang dicentang
-                    idx_a = min(r_idx * pts_per_seg, len(map_points) - 1)
-                    idx_b = min((r_idx + 1) * pts_per_seg, len(map_points) - 1)
-                    if idx_a == idx_b and idx_b < len(map_points) - 1:
-                        idx_b += 1
+                    if r_idx < len(st.session_state["df_master"]) and r_idx < len(all_lines):
+                        row_data = st.session_state["df_master"].iloc[r_idx]
+                        road_name = row_data["Nama Ruas Jalan Implementasi"]
+                        road_len = row_data["Panjang Ruas Jalan (Meter)"]
+                        selected_names.append(road_name)
                         
-                    seg_points = map_points[idx_a : idx_b + 1]
-                    
-                    # Gambar garis ungu HANYA untuk ruas yang dicentang ini
-                    line_coords = [[pt[1], pt[0]] for pt in seg_points]
-                    folium.PolyLine(
-                        line_coords, 
-                        color="#6c5ce7", 
-                        weight=7, 
-                        opacity=0.9, 
-                        tooltip=f"Ruas: {row_data['Nama Ruas Jalan Implementasi']}"
-                    ).add_to(m)
-                    
-                    # Pin Titik Awal & Akhir Ruas
-                    s_lat, s_lon = seg_points[0][1], seg_points[0][0]
-                    e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
-                    
-                    folium.Marker(
-                        location=[s_lat, s_lon],
-                        popup=f"<b>Titik Awal</b><br>{row_data['Nama Ruas Jalan Implementasi']}",
-                        icon=folium.Icon(color="green", icon="play")
-                    ).add_to(m)
-                    
-                    folium.Marker(
-                        location=[e_lat, e_lon],
-                        popup=f"<b>Titik Akhir</b><br>{row_data['Nama Ruas Jalan Implementasi']}",
-                        icon=folium.Icon(color="red", icon="flag")
-                    ).add_to(m)
-                    
-                    last_center_lat = (s_lat + e_lat) / 2
-                    last_center_lon = (s_lon + e_lon) / 2
+                        seg_points = all_lines[r_idx]
+                        line_coords = [[pt[1], pt[0]] for pt in seg_points]
+                        
+                        folium.PolyLine(
+                            line_coords, color="#6c5ce7", weight=7, opacity=0.9, 
+                            popup=folium.Popup(f"<b>Ruas Jalan:</b> {road_name}<br><b>Panjang:</b> {road_len} m", max_width=300),
+                            tooltip=folium.Tooltip(f"<b>{road_name}</b> ({road_len} m)", permanent=True)
+                        ).add_to(m)
+                        
+                        s_lat, s_lon = seg_points[0][1], seg_points[0][0]
+                        e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
+                        
+                        folium.Marker(location=[s_lat, s_lon], popup=f"<b>Titik Awal</b><br>{road_name}", icon=folium.Icon(color="green", icon="play")).add_to(m)
+                        folium.Marker(location=[e_lat, e_lon], popup=f"<b>Titik Akhir</b><br>{road_name}", icon=folium.Icon(color="red", icon="flag")).add_to(m)
                 
-                m.location = [last_center_lat, last_center_lon]
                 st.info(f"📍 **Ruas Terpilih ({len(selected_rows)}):** {', '.join(selected_names)}")
             else:
                 st.caption("💡 *Centang baris pada tabel di atas untuk memunculkan garis jalur ruas jalan di peta.*")
 
-            st_folium(m, use_container_width=True, height=480)
+            folium.LayerControl(position='topright').add_to(m)
+            st_folium(m, use_container_width=True, height=520)
     except Exception as e:
         st.warning(f"Gagal memuat preview peta: {e}")
 
-# --- KUSTOMISASI TAMPILAN CSS (TOMBOL UPLOAD UNGU) ---
+# --- KUSTOMISASI TAMPILAN CSS ---
 st.markdown("""
     <style>
-    /* Mengubah warna tombol Browse files / Unggah File menjadi Ungu */
     div[data-testid="stFileUploader"] section button {
-        background-color: #6c5ce7 !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-        font-weight: bold !important;
+        background-color: #6c5ce7 !important; color: white !important;
+        border: none !important; border-radius: 8px !important; font-weight: bold !important;
     }
-    div[data-testid="stFileUploader"] section button:hover {
-        background-color: #5a4bcf !important;
-        color: white !important;
-    }
+    div[data-testid="stFileUploader"] section button:hover { background-color: #5a4bcf !important; color: white !important; }
     </style>
 """, unsafe_allow_html=True)
