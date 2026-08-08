@@ -298,45 +298,57 @@ if uploaded_files:
         # =========================================================
         st.subheader("🗺️ Preview Peta Ruas Jalan & Titik Koordinat")
         
-        if 'points' in locals() and len(points) > 0:
-            # Ambil titik tengah untuk center peta
-            center_lat = points[len(points)//2][1]
-            center_lon = points[len(points)//2][0]
-            
-            # Buat Objek Peta Folium
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
-            
-            # 1. Gambar Jalur Ruas Jalan (Garis Warna Ungu)
-            line_coords = [[pt[1], pt[0]] for pt in points]
-            folium.PolyLine(
-                line_coords, 
-                color="#6c5ce7", 
-                weight=5, 
-                opacity=0.8, 
-                tooltip="Jalur Ruas Jalan KMZ"
-            ).add_to(m)
-            
-            # 2. Pin Titik Awal (Hijau)
-            start_lat, start_lon = points[0][1], points[0][0]
-            folium.Marker(
-                location=[start_lat, start_lon],
-                popup=f"<b>Titik Awal</b><br>Lat: {start_lat}<br>Lon: {start_lon}",
-                tooltip="Titik Awal",
-                icon=folium.Icon(color="green", icon="play")
-            ).add_to(m)
-            
-            # 3. Pin Titik Akhir (Merah)
-            end_lat, end_lon = points[-1][1], points[-1][0]
-            folium.Marker(
-                location=[end_lat, end_lon],
-                popup=f"<b>Titik Akhir</b><br>Lat: {end_lat}<br>Lon: {end_lon}",
-                tooltip="Titik Akhir",
-                icon=folium.Icon(color="red", icon="flag")
-            ).add_to(m)
-            
-            # Tampilkan Peta di Streamlit
-            st_folium(m, use_container_width=True, height=450)
-            st.dataframe(df_master)
+        try:
+            # Mengambil data koordinat dari file KMZ pertama yang diunggah
+            uploaded_files[0].seek(0)
+            kml_p, temp_d = extract_kml_from_kmz_bytes(uploaded_files[0].read())
+            map_points = parse_kml_all_linestrings(kml_p)
+            import shutil
+            shutil.rmtree(temp_d, ignore_errors=True)
+
+            if map_points and len(map_points) > 0:
+                # Ambil titik tengah untuk center peta
+                center_lat = map_points[len(map_points)//2][1]
+                center_lon = map_points[len(map_points)//2][0]
+                
+                # Buat Objek Peta Folium
+                m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
+                
+                # 1. Gambar Jalur Ruas Jalan (Garis Warna Ungu)
+                line_coords = [[pt[1], pt[0]] for pt in map_points]
+                folium.PolyLine(
+                    line_coords, 
+                    color="#6c5ce7", 
+                    weight=5, 
+                    opacity=0.8, 
+                    tooltip="Jalur Ruas Jalan KMZ"
+                ).add_to(m)
+                
+                # 2. Pin Titik Awal (Hijau)
+                start_lat, start_lon = map_points[0][1], map_points[0][0]
+                folium.Marker(
+                    location=[start_lat, start_lon],
+                    popup=f"<b>Titik Awal</b><br>Lat: {start_lat}<br>Lon: {start_lon}",
+                    tooltip="Titik Awal",
+                    icon=folium.Icon(color="green", icon="play")
+                ).add_to(m)
+                
+                # 3. Pin Titik Akhir (Merah)
+                end_lat, end_lon = map_points[-1][1], map_points[-1][0]
+                folium.Marker(
+                    location=[end_lat, end_lon],
+                    popup=f"<b>Titik Akhir</b><br>Lat: {end_lat}<br>Lon: {end_lon}",
+                    tooltip="Titik Akhir",
+                    icon=folium.Icon(color="red", icon="flag")
+                ).add_to(m)
+                
+                # Tampilkan Peta di Streamlit
+                st_folium(m, use_container_width=True, height=450)
+        except Exception as e:
+            st.warning(f"Gagal memuat preview peta: {e}")
+
+        # Tampilkan Tabel Master Excel
+        st.dataframe(df_master)
             
 # --- KUSTOMISASI TAMPILAN CSS (TOMBOL UPLOAD UNGU) ---
 st.markdown("""
