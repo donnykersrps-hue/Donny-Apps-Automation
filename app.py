@@ -65,7 +65,7 @@ def extract_kml_from_kmz_bytes(kmz_bytes):
         zip_ref.extractall(temp_dir)
         
     kml_path = os.path.join(temp_dir, "doc.kml")
-    return kml_path, temp_dir 
+    return kml_path, temp_dir
 
 def parse_kml_all_linestrings(kml_path):
     tree = ET.parse(kml_path)
@@ -256,43 +256,7 @@ if uploaded_files:
 if st.session_state.get("processed", False):
     st.success("✅ Selesai! File Master Excel berhasil dibuat.")
 
-    # Export ke Excel via Memory Buffer
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        st.session_state["df_master"].to_excel(writer, index=False, sheet_name='Master Data')
-        ws = writer.sheets['Master Data']
-        ws.views.sheetView[0].showGridLines = True
-        
-        hdr_fill = openpyxl.styles.PatternFill(start_color="003366", end_color="003366", fill_type="solid")
-        hdr_font = openpyxl.styles.Font(name="Arial", size=10, bold=True, color="FFFFFF")
-        border = openpyxl.styles.Border(
-            left=openpyxl.styles.Side(style='thin', color='D9D9D9'), right=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-            top=openpyxl.styles.Side(style='thin', color='D9D9D9'), bottom=openpyxl.styles.Side(style='thin', color='D9D9D9')
-        )
-        
-        for col_num in range(1, 13):
-            cell = ws.cell(row=1, column=col_num)
-            cell.fill, cell.font, cell.border = hdr_fill, hdr_font, border
-            cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
-            
-        for row in range(2, len(st.session_state["df_master"]) + 2):
-            for col in range(1, 13):
-                cell = ws.cell(row=row, column=col)
-                cell.border = border
-                if col == 8:
-                    cell.number_format = '#,##0.00'
-                    cell.alignment = openpyxl.styles.Alignment(horizontal="right")
-                elif col in [1, 2, 5, 9, 10, 11, 12]:
-                    cell.alignment = openpyxl.styles.Alignment(horizontal="center")
-                else:
-                    cell.alignment = openpyxl.styles.Alignment(horizontal="left")
-                    
-        widths = {'A':10, 'B':16, 'C':15, 'D':22, 'E':20, 'F':25, 'G':35, 'H':25, 'I':15, 'J':30, 'K':30, 'L':18}
-        for col_letter, width in widths.items(): ws.column_dimensions[col_letter].width = width
-
-    output.seek(0)
-
-# PREVIEW & EDIT TABEL MASTER EXCEL
+    # PREVIEW & EDIT TABEL MASTER EXCEL
     st.subheader("📊 Preview & Edit Tabel Master Excel")
     st.caption("💡 *Kak Donny bisa meng-klik sel mana saja di bawah untuk mengubah teks sebelum mendownload.*")
 
@@ -304,7 +268,7 @@ if st.session_state.get("processed", False):
         use_container_width=True
     )
 
-    # Regenerate file Excel berdasarkan data Master
+    # Export ke Excel via Memory Buffer dari Data Master
     output_edited = io.BytesIO()
     with pd.ExcelWriter(output_edited, engine='openpyxl') as writer:
         st.session_state["df_master"].to_excel(writer, index=False, sheet_name='Master Data')
@@ -348,15 +312,8 @@ if st.session_state.get("processed", False):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
-    # TOMBOL UNDUH EXCEL (MENGAMBIL HASIL EDITAN KAK DONNY)
-    st.download_button(
-        label="📥 Unduh File Excel Master (Hasil Edit)",
-        data=output_edited.getvalue(),
-        file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
-    )
-# PREVIEW PETA INTERAKTIF (BERSIH TANPA POPUP PERMANEN)
+
+    # PREVIEW PETA INTERAKTIF (BERSIH TANPA POPUP PERMANEN)
     st.subheader("🗺️ Preview Peta Ruas Jalan Interaktif")
     try:
         all_lines = st.session_state.get("all_map_lines", [])
@@ -385,7 +342,6 @@ if st.session_state.get("processed", False):
                         seg_points = all_lines[r_idx]
                         line_coords = [[pt[1], pt[0]] for pt in seg_points]
                         
-                        # Garis Ungu Bersih (Label hanya muncul saat kursor diarahkan / Hover)
                         folium.PolyLine(
                             line_coords, color="#6c5ce7", weight=7, opacity=0.9, 
                             tooltip=f"<b>{road_name}</b> ({road_len} m)"
