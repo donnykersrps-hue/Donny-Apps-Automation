@@ -252,6 +252,8 @@ if uploaded_files:
             st.session_state["all_map_lines"] = all_map_lines
             st.session_state["processed"] = True
 
+# Tampilkan Hasil Pemrosesan jika data tersimpan di session_state
+if st.session_state.get("processed", False) and "df_master" in st.session_state:
 # PREVIEW & EDIT TABEL MASTER EXCEL
     st.subheader("📊 Preview & Edit Tabel Master Excel")
     st.caption("💡 *Kak Donny bisa meng-klik 2x (double-click) sel mana saja di bawah untuk mengubah teks secara langsung sebelum mendownload.*")
