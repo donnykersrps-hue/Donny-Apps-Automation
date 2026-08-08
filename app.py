@@ -210,10 +210,9 @@ if uploaded_files:
         progress_bar = st.progress(0)
         status_text = st.empty()
         all_master_data = []
-        
+
         for index, uploaded_file in enumerate(uploaded_files, 1):
             basename = os.path.splitext(uploaded_file.name)[0]
-            
             if "-" in basename:
                 parts = basename.split("-", 1)
                 full_code = parts[0].strip()
@@ -221,7 +220,7 @@ if uploaded_files:
             else:
                 full_code = basename.strip()
                 area_name = ""
-                
+
             if len(full_code) >= 4 and full_code[:4].isdigit():
                 spk = full_code[:4]
                 ring_id = full_code[4:]
@@ -231,7 +230,7 @@ if uploaded_files:
 
             progress_bar.progress((index - 1) / len(uploaded_files))
             status_text.text(f"[{index}/{len(uploaded_files)}] Memproses {spk} - {ring_id}...")
-            
+
             try:
                 kmz_bytes = uploaded_file.read()
                 segments = process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_text)
@@ -240,14 +239,16 @@ if uploaded_files:
                 st.error(f"Gagal memproses file {uploaded_file.name}: {e}")
 
         progress_bar.progress(1.0)
-        
+
         if all_master_data:
-            columns = ["SPK", "Ring ID", "Destination", "Area", "Authority Ruas Jalan", "Instansi", 
-                       "Nama Ruas Jalan Implementasi", "Panjang Ruas Jalan (Meter)", "Status Cable", 
-                       "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"]
-            
+            columns = [
+                "SPK", "Ring ID", "Destination", "Area", 
+                "Authority Ruas Jalan", "Instansi", "Nama Ruas Jalan Implementasi", 
+                "Panjang Ruas Jalan (Meter)", "Status Cable", 
+                "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
+            ]
             df_master = pd.DataFrame(all_master_data, columns=columns)
-            
+
             # Export ke Excel via Memory Buffer
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -257,16 +258,18 @@ if uploaded_files:
                 
                 hdr_fill = openpyxl.styles.PatternFill(start_color="003366", end_color="003366", fill_type="solid")
                 hdr_font = openpyxl.styles.Font(name="Arial", size=10, bold=True, color="FFFFFF")
-                border = openpyxl.styles.Border(left=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                                                right=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                                                top=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                                                bottom=openpyxl.styles.Side(style='thin', color='D9D9D9'))
+                border = openpyxl.styles.Border(
+                    left=openpyxl.styles.Side(style='thin', color='D9D9D9'),
+                    right=openpyxl.styles.Side(style='thin', color='D9D9D9'),
+                    top=openpyxl.styles.Side(style='thin', color='D9D9D9'),
+                    bottom=openpyxl.styles.Side(style='thin', color='D9D9D9')
+                )
                 
                 for col_num in range(1, 13):
                     cell = ws.cell(row=1, column=col_num)
                     cell.fill, cell.font, cell.border = hdr_fill, hdr_font, border
                     cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
-                
+                    
                 for row in range(2, len(df_master) + 2):
                     for col in range(1, 13):
                         cell = ws.cell(row=row, column=col)
@@ -278,78 +281,60 @@ if uploaded_files:
                             cell.alignment = openpyxl.styles.Alignment(horizontal="center")
                         else:
                             cell.alignment = openpyxl.styles.Alignment(horizontal="left")
-
+                            
                 widths = {'A':10, 'B':16, 'C':15, 'D':22, 'E':20, 'F':25, 'G':35, 'H':25, 'I':15, 'J':30, 'K':30, 'L':18}
-                for col_letter, width in widths.items(): ws.column_dimensions[col_letter].width = width
+                for col_letter, width in widths.items():
+                    ws.column_dimensions[col_letter].width = width
 
             output.seek(0)
             
-            st.success("✅ Selesai! File Master Excel berhasil dibuat.")
-            
-            # Tombol Unduh Hasil
-            st.download_button(
-                label="📥 Unduh File Excel Master",
-                data=output,
-                file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-# =========================================================
-        # PREVIEW PETA INTERAKTIF (FOLIUM)
-        # =========================================================
-        st.subheader("🗺️ Preview Peta Ruas Jalan & Titik Koordinat")
-        
-        try:
-            # Mengambil data koordinat dari file KMZ pertama yang diunggah
-            uploaded_files[0].seek(0)
-            kml_p, temp_d = extract_kml_from_kmz_bytes(uploaded_files[0].read())
-            map_points = parse_kml_all_linestrings(kml_p)
-            import shutil
-            shutil.rmtree(temp_d, ignore_errors=True)
+            # Simpan data ke memori sementara (session_state) agar tidak ter-reset saat klik tombol unduh
+            st.session_state["df_master"] = df_master
+            st.session_state["excel_bytes"] = output.getvalue()
+            st.session_state["processed"] = True
 
-            if map_points and len(map_points) > 0:
-                # Ambil titik tengah untuk center peta
-                center_lat = map_points[len(map_points)//2][1]
-                center_lon = map_points[len(map_points)//2][0]
-                
-                # Buat Objek Peta Folium
-                m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
-                
-                # 1. Gambar Jalur Ruas Jalan (Garis Warna Ungu)
-                line_coords = [[pt[1], pt[0]] for pt in map_points]
-                folium.PolyLine(
-                    line_coords, 
-                    color="#6c5ce7", 
-                    weight=5, 
-                    opacity=0.8, 
-                    tooltip="Jalur Ruas Jalan KMZ"
-                ).add_to(m)
-                
-                # 2. Pin Titik Awal (Hijau)
-                start_lat, start_lon = map_points[0][1], map_points[0][0]
-                folium.Marker(
-                    location=[start_lat, start_lon],
-                    popup=f"<b>Titik Awal</b><br>Lat: {start_lat}<br>Lon: {start_lon}",
-                    tooltip="Titik Awal",
-                    icon=folium.Icon(color="green", icon="play")
-                ).add_to(m)
-                
-                # 3. Pin Titik Akhir (Merah)
-                end_lat, end_lon = map_points[-1][1], map_points[-1][0]
-                folium.Marker(
-                    location=[end_lat, end_lon],
-                    popup=f"<b>Titik Akhir</b><br>Lat: {end_lat}<br>Lon: {end_lon}",
-                    tooltip="Titik Akhir",
-                    icon=folium.Icon(color="red", icon="flag")
-                ).add_to(m)
-                
-                # Tampilkan Peta di Streamlit
-                st_folium(m, use_container_width=True, height=450)
-        except Exception as e:
-            st.warning(f"Gagal memuat preview peta: {e}")
+# Tampilkan Hasil Pemrosesan jika data tersimpan di session_state
+if st.session_state.get("processed", False):
+    st.success("✅ Selesai! File Master Excel berhasil dibuat.")
 
-        # Tampilkan Tabel Master Excel
-        st.dataframe(df_master)
+    # Tombol Unduh Hasil
+    st.download_button(
+        label="📥 Unduh File Excel Master",
+        data=st.session_state["excel_bytes"],
+        file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # Preview Peta Interaktif (Folium)
+    st.subheader("🗺️ Preview Peta Ruas Jalan & Titik Koordinat")
+    try:
+        uploaded_files[0].seek(0)
+        kml_p, temp_d = extract_kml_from_kmz_bytes(uploaded_files[0].read())
+        map_points = parse_kml_all_linestrings(kml_p)
+        import shutil
+        shutil.rmtree(temp_d, ignore_errors=True)
+
+        if map_points and len(map_points) > 0:
+            center_lat = map_points[len(map_points)//2][1]
+            center_lon = map_points[len(map_points)//2][0]
             
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
+            line_coords = [[pt[1], pt[0]] for pt in map_points]
+            folium.PolyLine(line_coords, color="#6c5ce7", weight=5, opacity=0.8, tooltip="Jalur Ruas Jalan KMZ").add_to(m)
+            
+            start_lat, start_lon = map_points[0][1], map_points[0][0]
+            folium.Marker(location=[start_lat, start_lon], popup=f"<b>Titik Awal</b><br>Lat: {start_lat}<br>Lon: {start_lon}", tooltip="Titik Awal", icon=folium.Icon(color="green", icon="play")).add_to(m)
+            
+            end_lat, end_lon = map_points[-1][1], map_points[-1][0]
+            folium.Marker(location=[end_lat, end_lon], popup=f"<b>Titik Akhir</b><br>Lat: {end_lat}<br>Lon: {end_lon}", tooltip="Titik Akhir", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+            
+            st_folium(m, use_container_width=True, height=450)
+    except Exception as e:
+        st.warning(f"Gagal memuat preview peta: {e}")
+
+    # Preview Tabel Master Excel
+    st.subheader("📊 Preview Tabel Master Excel")
+    st.dataframe(st.session_state["df_master"])          
 # --- KUSTOMISASI TAMPILAN CSS (TOMBOL UPLOAD UNGU) ---
 st.markdown("""
     <style>
