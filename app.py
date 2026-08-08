@@ -260,13 +260,15 @@ if st.session_state.get("processed", False):
     st.subheader("📊 Preview & Edit Tabel Master Excel")
     st.caption("💡 *Kak Donny bisa meng-klik sel mana saja di bawah untuk mengubah teks sebelum mendownload.*")
 
-   # Tabel Interaktif yang Bisa Diedit Langsung & Bisa Dicentang untuk Peta
-    event = st.dataframe(
+  # Tabel Interaktif yang BISA DIEDIT LANGSUNG
+    edited_df = st.data_editor(
         st.session_state["df_master"],
-        on_select="rerun",
-        selection_mode="multi-row",
-        use_container_width=True
+        use_container_width=True,
+        key="master_editor"
     )
+
+    # Simpan data hasil editan Kak Donny
+    st.session_state["df_master"] = edited_df
 
     # Export ke Excel via Memory Buffer dari Data Master
     output_edited = io.BytesIO()
