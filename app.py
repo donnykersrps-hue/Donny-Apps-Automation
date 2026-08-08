@@ -297,12 +297,24 @@ if uploaded_files:
 if st.session_state.get("processed", False):
     st.success("✅ Selesai! File Master Excel berhasil dibuat.")
 
+  
     # Tombol Unduh Hasil
     st.download_button(
         label="📥 Unduh File Excel Master",
         data=st.session_state["excel_bytes"],
         file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+# Preview Tabel Master Excel (Dibuat Interaktif / Bisa Diklik)
+    st.subheader("📊 Preview Tabel Master Excel (Klik baris untuk fokus di peta)")
+    
+    # Menampilkan tabel interaktif dengan mode pilih baris
+    event = st.dataframe(
+        st.session_state["df_master"],
+        on_select="rerun",
+        selection_mode="single-row",
+        use_container_width=True
     )
 
     # Preview Peta Interaktif (Folium)
@@ -315,26 +327,61 @@ if st.session_state.get("processed", False):
         shutil.rmtree(temp_d, ignore_errors=True)
 
         if map_points and len(map_points) > 0:
-            center_lat = map_points[len(map_points)//2][1]
-            center_lon = map_points[len(map_points)//2][0]
+            # Cek apakah ada baris tabel yang sedang diklik/dipilih user
+            selected_rows = event.selection.get("rows", [])
             
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
+            if selected_rows:
+                # Jika ada baris yang diklik, ambil data dari baris tersebut
+                row_idx = selected_rows[0]
+                row_data = st.session_state["df_master"].iloc[row_idx]
+                
+                road_name = row_data["Nama Ruas Jalan Implementasi"]
+                
+                # Koordinat Awal (Titik A) & Akhir (Titik B)
+                start_lat, start_lon = map_points[0][1], map_points[0][0]
+                end_lat, end_lon = map_points[-1][1], map_points[-1][0]
+                
+                # Peta fokus ke titik tengah ruas jalan yang diklik
+                center_lat = (start_lat + end_lat) / 2
+                center_lon = (start_lon + end_lon) / 2
+                zoom_lvl = 16
+                
+                st.info(f"📍 **Fokus Ruas Jalan:** {road_name}")
+            else:
+                # Jika belum ada baris yang diklik, tampilkan seluruh jalur KMZ
+                center_lat = map_points[len(map_points)//2][1]
+                center_lon = map_points[len(map_points)//2][0]
+                zoom_lvl = 15
+                start_lat, start_lon = map_points[0][1], map_points[0][0]
+                end_lat, end_lon = map_points[-1][1], map_points[-1][0]
+
+            # Buat Objek Peta Folium
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_lvl)
+            
+            # 1. Gambar Jalur Ruas Jalan (Garis Warna Ungu)
             line_coords = [[pt[1], pt[0]] for pt in map_points]
-            folium.PolyLine(line_coords, color="#6c5ce7", weight=5, opacity=0.8, tooltip="Jalur Ruas Jalan KMZ").add_to(m)
+            folium.PolyLine(line_coords, color="#6c5ce7", weight=6, opacity=0.85, tooltip="Jalur Ruas Jalan KMZ").add_to(m)
             
-            start_lat, start_lon = map_points[0][1], map_points[0][0]
-            folium.Marker(location=[start_lat, start_lon], popup=f"<b>Titik Awal</b><br>Lat: {start_lat}<br>Lon: {start_lon}", tooltip="Titik Awal", icon=folium.Icon(color="green", icon="play")).add_to(m)
+            # 2. Pin Titik A (Awal - Hijau)
+            folium.Marker(
+                location=[start_lat, start_lon],
+                popup=f"<b>TITIK A (AWAL)</b><br>Lat: {start_lat}<br>Lon: {start_lon}",
+                tooltip="Titik A (Awal)",
+                icon=folium.Icon(color="green", icon="play")
+            ).add_to(m)
             
-            end_lat, end_lon = map_points[-1][1], map_points[-1][0]
-            folium.Marker(location=[end_lat, end_lon], popup=f"<b>Titik Akhir</b><br>Lat: {end_lat}<br>Lon: {end_lon}", tooltip="Titik Akhir", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+            # 3. Pin Titik B (Akhir - Merah)
+            folium.Marker(
+                location=[end_lat, end_lon],
+                popup=f"<b>TITIK B (AKHIR)</b><br>Lat: {end_lat}<br>Lon: {end_lon}",
+                tooltip="Titik B (Akhir)",
+                icon=folium.Icon(color="red", icon="flag")
+            ).add_to(m)
             
-            st_folium(m, use_container_width=True, height=450)
+            # Tampilkan Peta
+            st_folium(m, use_container_width=True, height=480)
     except Exception as e:
         st.warning(f"Gagal memuat preview peta: {e}")
-
-    # Preview Tabel Master Excel
-    st.subheader("📊 Preview Tabel Master Excel")
-    st.dataframe(st.session_state["df_master"])          
 # --- KUSTOMISASI TAMPILAN CSS (TOMBOL UPLOAD UNGU) ---
 st.markdown("""
     <style>
