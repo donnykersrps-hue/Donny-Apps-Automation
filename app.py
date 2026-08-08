@@ -311,7 +311,7 @@ if st.session_state.get("processed", False):
         use_container_width=True
     )
 
-    # PREVIEW PETA INTERAKTIF
+# PREVIEW PETA INTERAKTIF (BERSIH TANPA POPUP PERMANEN)
     st.subheader("🗺️ Preview Peta Ruas Jalan Interaktif")
     try:
         all_lines = st.session_state.get("all_map_lines", [])
@@ -340,17 +340,17 @@ if st.session_state.get("processed", False):
                         seg_points = all_lines[r_idx]
                         line_coords = [[pt[1], pt[0]] for pt in seg_points]
                         
+                        # Garis Ungu Bersih (Label hanya muncul saat kursor diarahkan / Hover)
                         folium.PolyLine(
                             line_coords, color="#6c5ce7", weight=7, opacity=0.9, 
-                            popup=folium.Popup(f"<b>Ruas Jalan:</b> {road_name}<br><b>Panjang:</b> {road_len} m", max_width=300),
-                            tooltip=folium.Tooltip(f"<b>{road_name}</b> ({road_len} m)", permanent=True)
+                            tooltip=f"<b>{road_name}</b> ({road_len} m)"
                         ).add_to(m)
                         
                         s_lat, s_lon = seg_points[0][1], seg_points[0][0]
                         e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
                         
-                        folium.Marker(location=[s_lat, s_lon], popup=f"<b>Titik Awal</b><br>{road_name}", icon=folium.Icon(color="green", icon="play")).add_to(m)
-                        folium.Marker(location=[e_lat, e_lon], popup=f"<b>Titik Akhir</b><br>{road_name}", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+                        folium.Marker(location=[s_lat, s_lon], tooltip=f"Titik Awal: {road_name}", icon=folium.Icon(color="green", icon="play")).add_to(m)
+                        folium.Marker(location=[e_lat, e_lon], tooltip=f"Titik Akhir: {road_name}", icon=folium.Icon(color="red", icon="flag")).add_to(m)
                 
                 st.info(f"📍 **Ruas Terpilih ({len(selected_rows)}):** {', '.join(selected_names)}")
             else:
