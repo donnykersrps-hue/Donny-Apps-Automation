@@ -248,7 +248,6 @@ if all_master_data:
             "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
         ]
         df_master = pd.DataFrame(all_master_data, columns=columns)
-        # Tambahkan kolom centang khusus untuk Filter Peta
         if "Pilih Peta" not in df_master.columns:
             df_master.insert(0, "Pilih Peta", True)
             
