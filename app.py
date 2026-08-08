@@ -240,20 +240,20 @@ if uploaded_files:
 
         progress_bar.progress(1.0)
 
-    if all_master_data:
-        columns = [
-        "SPK", "Ring ID", "Destination", "Area", 
-        "Authority Ruas Jalan", "Instansi", "Nama Ruas Jalan Implementasi", 
-        "Panjang Ruas Jalan (Meter)", "Status Cable", 
-        "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
-        ]
-        df_master = pd.DataFrame(all_master_data, columns=columns)
-        if "Pilih Peta" not in df_master.columns:
-        df_master.insert(0, "Pilih Peta", True)
+        if all_master_data:
+            columns = [
+                "SPK", "Ring ID", "Destination", "Area",
+                "Authority Ruas Jalan", "Instansi", "Nama Ruas Jalan Implementasi",
+                "Panjang Ruas Jalan (Meter)", "Status Cable",
+                "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
+            ]
+            df_master = pd.DataFrame(all_master_data, columns=columns)
+            if "Pilih Peta" not in df_master.columns:
+                df_master.insert(0, "Pilih Peta", True)
 
-        st.session_state["df_master"] = df_master
-        st.session_state["all_map_lines"] = all_map_lines
-        st.session_state["processed"] = True
+            st.session_state["df_master"] = df_master
+            st.session_state["all_map_lines"] = all_map_lines
+            st.session_state["processed"] = True
 
 # Tampilkan Hasil Pemrosesan jika data tersimpan di session_state
 if st.session_state.get("processed", False) and "df_master" in st.session_state:
