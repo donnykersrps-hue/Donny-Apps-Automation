@@ -250,7 +250,7 @@ if all_master_data:
         df_master = pd.DataFrame(all_master_data, columns=columns)
         if "Pilih Peta" not in df_master.columns:
             df_master.insert(0, "Pilih Peta", True)
-            
+
         st.session_state["df_master"] = df_master
         st.session_state["all_map_lines"] = all_map_lines
         st.session_state["processed"] = True
