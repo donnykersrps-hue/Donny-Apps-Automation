@@ -65,7 +65,7 @@ def extract_kml_from_kmz_bytes(kmz_bytes):
         zip_ref.extractall(temp_dir)
         
     kml_path = os.path.join(temp_dir, "doc.kml")
-    return kml_path, temp_dir
+    return kml_path, temp_dir 
 
 def parse_kml_all_linestrings(kml_path):
     tree = ET.parse(kml_path)
@@ -292,13 +292,11 @@ if st.session_state.get("processed", False):
 
     output.seek(0)
 
-    # TOMBOL UNDUH EXCEL
+# TOMBOL UNDUH EXCEL
     st.download_button(
         label="📥 Unduh File Excel Master",
         data=output.getvalue(),
-        file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
+        ...
     )
 
     # PREVIEW TABEL MASTER EXCEL (CENTANG MULTI-ROW)
