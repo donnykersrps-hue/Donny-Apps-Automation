@@ -240,7 +240,7 @@ if uploaded_files:
 
         progress_bar.progress(1.0)
 
-if all_master_data:
+    if all_master_data:
         columns = [
             "SPK", "Ring ID", "Destination", "Area", 
             "Authority Ruas Jalan", "Instansi", "Nama Ruas Jalan Implementasi", 
