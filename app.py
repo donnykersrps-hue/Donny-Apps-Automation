@@ -293,3 +293,33 @@ if uploaded_files:
             )
             
             st.dataframe(df_master)
+            
+# --- KUSTOMISASI TAMPILAN CSS (TOMBOL UPLOAD UNGU) ---
+st.markdown("""
+    <style>
+    /* 1. Mengubah warna tombol Browse files / Upload */
+    div[data-testid="stFileUploader"] button {
+        background-color: #6c5ce7 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+    }
+    
+    /* 2. Efek saat tombol di-hover (kursor di atas tombol) */
+    div[data-testid="stFileUploader"] button:hover {
+        background-color: #5b4bc4 !important;
+        color: white !important;
+    }
+    
+    /* 3. Mengubah warna ikon & teks petunjuk upload */
+    div[data-testid="stFileUploaderDropzone"] {
+        border: 2px dashed #6c5ce7 !important;
+        background-color: #f8f7ff !important;
+        border-radius: 10px !important;
+    }
+    
+    div[data-testid="stFileUploaderDropzone"] svg {
+        fill: #6c5ce7 !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
