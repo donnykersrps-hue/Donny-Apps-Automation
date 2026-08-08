@@ -252,21 +252,22 @@ if uploaded_files:
             st.session_state["all_map_lines"] = all_map_lines
             st.session_state["processed"] = True
 
-# Tampilkan Hasil Pemrosesan jika data tersimpan di session_state
-if st.session_state.get("processed", False) and "df_master" in st.session_state:
 # PREVIEW & EDIT TABEL MASTER EXCEL
     st.subheader("📊 Preview & Edit Tabel Master Excel")
-    st.caption("💡 *Kak Donny bisa meng-klik 2x (double-click) sel mana saja di bawah untuk mengubah teks secara langsung sebelum mendownload.*")
+    st.caption("💡 *Kak Donny bisa meng-klik 2x (double-click) sel mana saja di bawah untuk mengubah teks, atau centang baris untuk memfilter peta di bawah.*")
 
-    # Tabel Interaktif yang BISA DIEDIT LANGSUNG
-    edited_df = st.data_editor(
+    # TABEL EDITABLE & SUPPORT CENTANG MULTI-ROW
+    editor_result = st.data_editor(
         st.session_state["df_master"],
         num_rows="dynamic",
         use_container_width=True,
+        on_select="rerun",
+        selection_mode="multi-row",
         key="master_editor"
     )
 
-    # Simpan data editan terbaru Kak Donny ke session state
+    # Ambil dataframe hasil edit
+    edited_df = editor_result if isinstance(editor_result, pd.DataFrame) else st.session_state["df_master"]
     st.session_state["df_master"] = edited_df
 
     # Export ke Excel via Memory Buffer dari Data Master yang Sudah Ter-Edit
@@ -329,32 +330,43 @@ if st.session_state.get("processed", False) and "df_master" in st.session_state:
                 name='Satelit + Teks Nama Jalan (Google Earth)'
             ).add_to(m)
 
-            # Tampilkan seluruh jalur segmen di peta
-            for r_idx in range(len(edited_df)):
-                if r_idx < len(all_lines):
-                    row_data = edited_df.iloc[r_idx]
-                    road_name = row_data["Nama Ruas Jalan Implementasi"]
-                    road_len = row_data["Panjang Ruas Jalan (Meter)"]
-                    
-                    seg_points = all_lines[r_idx]
-                    line_coords = [[pt[1], pt[0]] for pt in seg_points]
-                    
-                    folium.PolyLine(
-                        line_coords, color="#6c5ce7", weight=7, opacity=0.9, 
-                        tooltip=f"<b>{road_name}</b> ({road_len} m)"
-                    ).add_to(m)
-                    
-                    s_lat, s_lon = seg_points[0][1], seg_points[0][0]
-                    e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
-                    
-                    folium.Marker(location=[s_lat, s_lon], tooltip=f"Titik Awal: {road_name}", icon=folium.Icon(color="green", icon="play")).add_to(m)
-                    folium.Marker(location=[e_lat, e_lon], tooltip=f"Titik Akhir: {road_name}", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+            # Ambil indeks baris yang dicentang pengguna
+            selected_rows = []
+            if hasattr(st.session_state, "master_editor") and "selection" in st.session_state.master_editor:
+                selected_rows = st.session_state.master_editor["selection"].get("rows", [])
+
+            if selected_rows:
+                selected_names = []
+                for r_idx in selected_rows:
+                    if r_idx < len(edited_df) and r_idx < len(all_lines):
+                        row_data = edited_df.iloc[r_idx]
+                        road_name = row_data["Nama Ruas Jalan Implementasi"]
+                        road_len = row_data["Panjang Ruas Jalan (Meter)"]
+                        selected_names.append(road_name)
+                        
+                        seg_points = all_lines[r_idx]
+                        line_coords = [[pt[1], pt[0]] for pt in seg_points]
+                        
+                        folium.PolyLine(
+                            line_coords, color="#6c5ce7", weight=7, opacity=0.9, 
+                            tooltip=f"<b>{road_name}</b> ({road_len} m)"
+                        ).add_to(m)
+                        
+                        s_lat, s_lon = seg_points[0][1], seg_points[0][0]
+                        e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
+                        
+                        folium.Marker(location=[s_lat, s_lon], tooltip=f"Titik Awal: {road_name}", icon=folium.Icon(color="green", icon="play")).add_to(m)
+                        folium.Marker(location=[e_lat, e_lon], tooltip=f"Titik Akhir: {road_name}", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+                
+                st.info(f"📍 **Ruas Terpilih ({len(selected_rows)}):** {', '.join(selected_names)}")
+            else:
+                st.caption("💡 *Centang baris pada tabel di atas untuk memunculkan garis jalur ruas jalan di peta.*")
 
             folium.LayerControl(position='topright').add_to(m)
             st_folium(m, use_container_width=True, height=520)
     except Exception as e:
         st.warning(f"Gagal memuat preview peta: {e}")
-        
+
 # --- KUSTOMISASI TAMPILAN CSS ---
 st.markdown("""
     <style>
