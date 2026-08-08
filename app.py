@@ -259,7 +259,6 @@ if uploaded_files:
     # TABEL EDITABLE & SUPPORT CENTANG MULTI-ROW
     editor_result = st.data_editor(
         st.session_state["df_master"],
-        num_rows="dynamic",
         use_container_width=True,
         on_select="rerun",
         selection_mode="multi-row",
