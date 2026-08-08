@@ -252,28 +252,25 @@ if uploaded_files:
             st.session_state["all_map_lines"] = all_map_lines
             st.session_state["processed"] = True
 
-# Tampilkan Hasil Pemrosesan jika data tersimpan di session_state
-if st.session_state.get("processed", False):
-    st.success("✅ Selesai! File Master Excel berhasil dibuat.")
-
-    # PREVIEW & EDIT TABEL MASTER EXCEL
+# PREVIEW & EDIT TABEL MASTER EXCEL
     st.subheader("📊 Preview & Edit Tabel Master Excel")
-    st.caption("💡 *Kak Donny bisa meng-klik sel mana saja di bawah untuk mengubah teks sebelum mendownload.*")
+    st.caption("💡 *Kak Donny bisa meng-klik 2x (double-click) sel mana saja di bawah untuk mengubah teks secara langsung sebelum mendownload.*")
 
-  # Tabel Interaktif yang BISA DIEDIT LANGSUNG
+    # Tabel Interaktif yang BISA DIEDIT LANGSUNG
     edited_df = st.data_editor(
         st.session_state["df_master"],
+        num_rows="dynamic",
         use_container_width=True,
         key="master_editor"
     )
 
-    # Simpan data hasil editan Kak Donny
+    # Simpan data editan terbaru Kak Donny ke session state
     st.session_state["df_master"] = edited_df
 
-    # Export ke Excel via Memory Buffer dari Data Master
+    # Export ke Excel via Memory Buffer dari Data Master yang Sudah Ter-Edit
     output_edited = io.BytesIO()
     with pd.ExcelWriter(output_edited, engine='openpyxl') as writer:
-        st.session_state["df_master"].to_excel(writer, index=False, sheet_name='Master Data')
+        edited_df.to_excel(writer, index=False, sheet_name='Master Data')
         ws = writer.sheets['Master Data']
         ws.views.sheetView[0].showGridLines = True
         
@@ -289,7 +286,7 @@ if st.session_state.get("processed", False):
             cell.fill, cell.font, cell.border = hdr_fill, hdr_font, border
             cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
             
-        for row in range(2, len(st.session_state["df_master"]) + 2):
+        for row in range(2, len(edited_df) + 2):
             for col in range(1, 13):
                 cell = ws.cell(row=row, column=col)
                 cell.border = border
@@ -308,20 +305,18 @@ if st.session_state.get("processed", False):
 
     # TOMBOL UNDUH EXCEL
     st.download_button(
-        label="📥 Unduh File Excel Master",
+        label="📥 Unduh File Excel Master (Hasil Edit)",
         data=output_edited.getvalue(),
         file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
 
-    # PREVIEW PETA INTERAKTIF (BERSIH TANPA POPUP PERMANEN)
+    # PREVIEW PETA INTERAKTIF
     st.subheader("🗺️ Preview Peta Ruas Jalan Interaktif")
     try:
         all_lines = st.session_state.get("all_map_lines", [])
         if all_lines:
-            selected_rows = event.selection.get("rows", [])
-
             first_pt = all_lines[0][0]
             m = folium.Map(location=[first_pt[1], first_pt[0]], zoom_start=15, tiles=None)
             
@@ -332,38 +327,32 @@ if st.session_state.get("processed", False):
                 name='Satelit + Teks Nama Jalan (Google Earth)'
             ).add_to(m)
 
-            if selected_rows:
-                selected_names = []
-                for r_idx in selected_rows:
-                    if r_idx < len(st.session_state["df_master"]) and r_idx < len(all_lines):
-                        row_data = st.session_state["df_master"].iloc[r_idx]
-                        road_name = row_data["Nama Ruas Jalan Implementasi"]
-                        road_len = row_data["Panjang Ruas Jalan (Meter)"]
-                        selected_names.append(road_name)
-                        
-                        seg_points = all_lines[r_idx]
-                        line_coords = [[pt[1], pt[0]] for pt in seg_points]
-                        
-                        folium.PolyLine(
-                            line_coords, color="#6c5ce7", weight=7, opacity=0.9, 
-                            tooltip=f"<b>{road_name}</b> ({road_len} m)"
-                        ).add_to(m)
-                        
-                        s_lat, s_lon = seg_points[0][1], seg_points[0][0]
-                        e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
-                        
-                        folium.Marker(location=[s_lat, s_lon], tooltip=f"Titik Awal: {road_name}", icon=folium.Icon(color="green", icon="play")).add_to(m)
-                        folium.Marker(location=[e_lat, e_lon], tooltip=f"Titik Akhir: {road_name}", icon=folium.Icon(color="red", icon="flag")).add_to(m)
-                
-                st.info(f"📍 **Ruas Terpilih ({len(selected_rows)}):** {', '.join(selected_names)}")
-            else:
-                st.caption("💡 *Centang baris pada tabel di atas untuk memunculkan garis jalur ruas jalan di peta.*")
+            # Tampilkan seluruh jalur segmen di peta
+            for r_idx in range(len(edited_df)):
+                if r_idx < len(all_lines):
+                    row_data = edited_df.iloc[r_idx]
+                    road_name = row_data["Nama Ruas Jalan Implementasi"]
+                    road_len = row_data["Panjang Ruas Jalan (Meter)"]
+                    
+                    seg_points = all_lines[r_idx]
+                    line_coords = [[pt[1], pt[0]] for pt in seg_points]
+                    
+                    folium.PolyLine(
+                        line_coords, color="#6c5ce7", weight=7, opacity=0.9, 
+                        tooltip=f"<b>{road_name}</b> ({road_len} m)"
+                    ).add_to(m)
+                    
+                    s_lat, s_lon = seg_points[0][1], seg_points[0][0]
+                    e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
+                    
+                    folium.Marker(location=[s_lat, s_lon], tooltip=f"Titik Awal: {road_name}", icon=folium.Icon(color="green", icon="play")).add_to(m)
+                    folium.Marker(location=[e_lat, e_lon], tooltip=f"Titik Akhir: {road_name}", icon=folium.Icon(color="red", icon="flag")).add_to(m)
 
             folium.LayerControl(position='topright').add_to(m)
             st_folium(m, use_container_width=True, height=520)
     except Exception as e:
         st.warning(f"Gagal memuat preview peta: {e}")
-
+        
 # --- KUSTOMISASI TAMPILAN CSS ---
 st.markdown("""
     <style>
