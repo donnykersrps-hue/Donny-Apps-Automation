@@ -1,201 +1,169 @@
-import os
-import zipfile
-import tempfile
-import xml.etree.ElementTree as ET
-import urllib.request
-import json
-import pandas as pd
-from shapely.geometry import LineString
-from pyproj import Transformer
-import openpyxl
-import math
-import time
-import io
 import streamlit as st
+import zipfile
+import xml.etree.ElementTree as ET
+import pandas as pd
+import io
+import re
+import os
 import folium
 from streamlit_folium import st_folium
+import openpyxl
+import requests
 
-# Setup Konfigurasi Halaman Streamlit
+# Konfigurasi Halaman Streamlit
 st.set_page_config(
     page_title="Otomatisasi Rekap Ruas Jalan KMZ",
     page_icon="🛣️",
-    layout="centered"
+    layout="wide"
 )
 
-# Cache untuk API Reverse Geocoding
-if "api_cache" not in st.session_state:
-    st.session_state.api_cache = {}
-
-def decimal_to_dms(lat, lon):
-    """Konversi koordinat desimal ke format DMS presisi."""
-    if lat is None or lon is None or pd.isna(lat) or pd.isna(lon): return ""
-    lat_dir, lat_abs = ('N', abs(lat)) if lat >= 0 else ('S', abs(lat))
-    lat_d = int(lat_abs)
-    lat_m = int((lat_abs - lat_d) * 60)
-    lat_s = round((lat_abs - lat_d - lat_m/60) * 3600, 2)
-    if lat_s >= 60.0: lat_s, lat_m = lat_s - 60.0, lat_m + 1
-    if lat_m >= 60: lat_m, lat_d = lat_m - 60, lat_d + 1
+def convert_dms_to_dd(dms_str):
+    """Mengubah format DMS (2°43'17.98"S, 102°54'36.1"E) ke Decimal Degrees."""
+    try:
+        parts = dms_str.split(',')
+        if len(parts) != 2:
+            return None, None
         
-    lon_dir, lon_abs = ('E', abs(lon)) if lon >= 0 else ('W', abs(lon))
-    lon_d = int(lon_abs)
-    lon_m = int((lon_abs - lon_d) * 60)
-    lon_s = round((lon_abs - lon_d - lon_m/60) * 3600, 2)
-    if lon_s >= 60.0: lon_s, lon_m = lon_s - 60.0, lon_m + 1
-    if lon_m >= 60: lon_m, lon_d = lon_m - 60, lon_d + 1
-        
-    return f'{lat_d}°{lat_m}\'{lat_s}"{lat_dir} {lon_d}°{lon_m}\'{lon_s}"{lon_dir}'
+        lat_part = parts[0].strip()
+        lon_part = parts[1].strip()
 
-def get_utm_epsg(lon, lat):
-    zone_number = int((lon + 180) / 6) + 1
-    return f"EPSG:326{zone_number:02d}" if lat >= 0 else f"EPSG:327{zone_number:02d}"
+        def parse_single_dms(s):
+            match = re.search(r"(\d+)°\s*(\d+)['\']\s*([\d.]+)\"\s*([NSEWnsew])", s)
+            if not match:
+                return None
+            deg, m, sec, direction = match.groups()
+            dd = float(deg) + float(m)/60 + float(sec)/3600
+            if direction.upper() in ['S', 'W']:
+                dd = -dd
+            return dd
 
-def calculate_deflection_angle(p1, p2, p3):
-    v1_x, v1_y = p2[0] - p1[0], p2[1] - p1[1]
-    v2_x, v2_y = p3[0] - p2[0], p3[1] - p2[1]
-    b1 = math.degrees(math.atan2(v1_y, v1_x))
-    b2 = math.degrees(math.atan2(v2_y, v2_x))
-    diff = abs(b1 - b2)
-    return 360 - diff if diff > 180 else diff
+        lat = parse_single_dms(lat_part)
+        lon = parse_single_dms(lon_part)
+        return lat, lon
+    except Exception:
+        return None, None
+
+def format_dd_to_dms(lat, lon):
+    """Mengubah desimal latitude/longitude kembali ke format DMS standar."""
+    def dd_to_dms_single(val, is_lat):
+        direction = 'S' if is_lat and val < 0 else ('N' if is_lat else ('W' if val < 0 else 'E'))
+        val = abs(val)
+        degrees = int(val)
+        minutes_float = (val - degrees) * 60
+        minutes = int(minutes_float)
+        seconds = round((minutes_float - minutes) * 60, 2)
+        return f"{degrees}°{minutes}'{seconds}\"{direction}"
+    
+    return f"{dd_to_dms_single(lat, True)}, {dd_to_dms_single(lon, False)}"
 
 def extract_kml_from_kmz_bytes(kmz_bytes):
+    """Mengekstrak file doc.kml dari data file KMZ di memori."""
+    import tempfile
     temp_dir = tempfile.mkdtemp()
-    try:
-        kmz_buffer = io.BytesIO(kmz_bytes)
-        with zipfile.ZipFile(kmz_buffer, 'r') as zip_ref:
-            zip_ref.extractall(temp_dir)
-        for root, _, files in os.walk(temp_dir):
-            for file in files:
-                if file.endswith('.kml'): return os.path.join(root, file), temp_dir
-        raise FileNotFoundError("Tidak ditemukan file KML di dalam KMZ.")
-    except Exception as e:
-        import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise e
+    kmz_path = os.path.join(temp_dir, "temp.kmz")
+    with open(kmz_path, "wb") as f:
+        f.write(kmz_bytes)
+    
+    with zipfile.ZipFile(kmz_path, 'r') as zip_ref:
+        zip_ref.extractall(temp_dir)
+        
+    kml_path = os.path.join(temp_dir, "doc.kml")
+    return kml_path, temp_dir
 
 def parse_kml_all_linestrings(kml_path):
+    """Membaca seluruh koordinat jalur linestring dari file KML."""
     tree = ET.parse(kml_path)
-    all_coords = []
-    clean_tag = lambda tag: tag.split('}')[-1] if '}' in tag else tag
-    for elem in tree.getroot().iter():
-        if clean_tag(elem.tag) == 'LineString':
-            for child in elem.iter():
-                if clean_tag(child.tag) == 'coordinates' and child.text:
-                    for pt in child.text.strip().replace('\n', ' ').split():
-                        parts = pt.split(',')
-                        if len(parts) >= 2:
-                            try:
-                                lon, lat = float(parts[0]), float(parts[1])
-                                if not all_coords or all_coords[-1] != (lon, lat):
-                                    all_coords.append((lon, lat))
-                            except ValueError: continue
-                    break
-    return all_coords
+    root = tree.getroot()
+    ns = {'kml': 'http://www.opengis.net/kml/2.2'}
+    
+    coordinates_points = []
+    for coord_elem in root.findall('.//kml:LineString/kml:coordinates', ns):
+        text = coord_elem.text
+        if text:
+            raw_coords = text.strip().split()
+            for item in raw_coords:
+                parts = item.split(',')
+                if len(parts) >= 2:
+                    lon = float(parts[0])
+                    lat = float(parts[1])
+                    coordinates_points.append((lon, lat))
+    return coordinates_points
 
-def get_accurate_road_info(lat, lon):
-    coord_key = (round(lat, 5), round(lon, 5))
-    if coord_key in st.session_state.api_cache: 
-        return st.session_state.api_cache[coord_key]
-
-    road_name = "Jalan Belum Terdata (OSM)"
-    authority = "Kota"
-    instansi = "Dinas PUPR Kota/Kabupaten"
-
+def reverse_geocode_photon(lat, lon):
+    """Layanan reverse geocoding cepat menggunakan Photon API OpenStreetMap."""
     try:
         url = f"https://photon.komoot.io/reverse?lon={lon}&lat={lat}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'GIS_Drafter_App/13.0'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode())
-            if data.get('features'):
-                props = data['features'][0].get('properties', {})
-                highway_type = props.get('highway', '')
-                
-                road = props.get('street') or props.get('name') or props.get('highway')
-                if road: road_name = str(road).title()
-                else:
-                    if props.get('village'): road_name = f"Jalan Akses {str(props.get('village')).title()}"
-                    elif props.get('county'): road_name = f"Kawasan {str(props.get('county')).title()}"
-                
-                name_lower = road_name.lower()
-                
-                if any(kw in name_lower for kw in ['lintas', 'nasional', 'raya ']) or highway_type in ['trunk', 'primary', 'motorway']:
-                    authority, instansi = "Provinsi", "Dinas PUPR Provinsi"
-                elif "belum terdata" in name_lower or "akses" in name_lower or "gang " in name_lower or highway_type in ['track', 'path', 'unclassified']:
-                    authority, instansi = "Desa", "Pemerintah Desa"
-                else:
-                    authority, instansi = "Kota", "Dinas PUPR Kota/Kabupaten"
-            
-            result = (road_name, authority, instansi)
-            st.session_state.api_cache[coord_key] = result
-            time.sleep(0.02)
-            return result
-    except Exception: return (road_name, authority, instansi)
+        headers = {'User-Agent': 'KMZRoadAutomationApp/1.0'}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data and 'features' in data and len(data['features']) > 0:
+                props = data['features'][0]['properties']
+                road_name = props.get('name', '')
+                district = props.get('district', props.get('suburb', ''))
+                city = props.get('city', props.get('county', ''))
+                state = props.get('state', '')
+                return road_name, district, city, state
+    except Exception:
+        pass
+    return "", "", "", ""
 
-def process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_container):
-    import shutil
+def process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_text):
+    """Memproses satu file KMZ dan menguraikannya menjadi segmen laporan Excel."""
     kml_path, temp_dir = extract_kml_from_kmz_bytes(kmz_bytes)
-    try:
-        points = parse_kml_all_linestrings(kml_path)
-        if len(points) < 2: return []
+    points = parse_kml_all_linestrings(kml_path)
+    
+    import shutil
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    if not points:
+        return []
+    
+    # Hitung total panjang jalur (pembagian kasar sederhana)
+    from math import radians, cos, sin, asin, sqrt
+    def haversine(lon1, lat1, lon2, lat2):
+        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+        dlon = lon2 - lon1 
+        dlat = lat2 - lat1 
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * asin(sqrt(a)) 
+        r = 6371000 # Radius bumi dalam meter
+        return c * r
 
-        transformer = Transformer.from_crs("EPSG:4326", get_utm_epsg(points[0][0], points[0][1]), always_xy=True)
-        segments_data = []
-        seg_start_idx, last_api_idx = 0, 0
+    total_len = 0.0
+    for i in range(len(points) - 1):
+        total_len += haversine(points[i][0], points[i][1], points[i+1][0], points[i+1][1])
         
-        current_road, current_auth, current_instansi = get_accurate_road_info(points[0][1], points[0][0])
-        
-        i = 1
-        while i < len(points):
-            lon, lat = points[i]
-            cur_utm = transformer.transform(lon, lat)
-            last_utm = transformer.transform(points[last_api_idx][0], points[last_api_idx][1])
-            
-            is_sharp = calculate_deflection_angle(points[i-1], points[i], points[i+1]) > 30 if i < len(points)-1 else False
-            dist = math.hypot(cur_utm[0] - last_utm[0], cur_utm[1] - last_utm[1])
-            
-            if (i == len(points) - 1) or is_sharp or dist >= 50:
-                if status_container and i % 20 == 0: 
-                    status_container.text(f"Memindai vertex {i}/{len(points)} pada {ring_id}...")
-                chk_road, chk_auth, chk_inst = get_accurate_road_info(lat, lon)
-                
-                if chk_road and chk_road != current_road:
-                    cut_idx = i
-                    for j in range(last_api_idx + 1, i):
-                        m_road, m_auth, m_inst = get_accurate_road_info(points[j][1], points[j][0])
-                        if m_road and m_road != current_road:
-                            cut_idx, chk_road, chk_auth, chk_inst = j, m_road, m_auth, m_inst
-                            break
-                    
-                    seg_pts = points[seg_start_idx : cut_idx + 1]
-                    if len(seg_pts) > 1:
-                        line_utm = LineString([transformer.transform(pt[0], pt[1]) for pt in seg_pts])
-                        segments_data.append([
-                            spk, ring_id, "", area_name, current_auth, current_instansi,
-                            current_road, round(line_utm.length, 2), "",
-                            decimal_to_dms(seg_pts[0][1], seg_pts[0][0]), decimal_to_dms(seg_pts[-1][1], seg_pts[-1][0]),
-                            ""
-                        ])
-                    
-                    current_road, current_auth, current_instansi = chk_road, chk_auth, chk_inst
-                    seg_start_idx = cut_idx
-                    last_api_idx = cut_idx
-                    i = cut_idx + 1
-                    continue
-                last_api_idx = i
-            i += 1
+    start_pt = points[0]
+    end_pt = points[-1]
+    
+    start_dms = format_dd_to_dms(start_pt[1], start_pt[0])
+    end_dms = format_dd_to_dms(end_pt[1], end_pt[0])
+    
+    mid_idx = len(points) // 2
+    road_name, district, city, state = reverse_geocode_photon(points[mid_idx][1], points[mid_idx][0])
+    if not road_name:
+        road_name = f"Ruas Jalan {ring_id}"
 
-        if seg_start_idx < len(points) - 1:
-            seg_pts = points[seg_start_idx : len(points)]
-            if len(seg_pts) > 1:
-                line_utm = LineString([transformer.transform(pt[0], pt[1]) for pt in seg_pts])
-                segments_data.append([
-                    spk, ring_id, "", area_name, current_auth, current_instansi,
-                    current_road, round(line_utm.length, 2), "",
-                    decimal_to_dms(seg_pts[0][1], seg_pts[0][0]), decimal_to_dms(seg_pts[-1][1], seg_pts[-1][0]),
-                    ""
-                ])
-        return segments_data
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    dest = area_name if area_name else "Nasional"
+    area = f"{district}, {city}".strip(", ") if (district or city) else "Sektor Wilayah"
+    
+    segment = {
+        "SPK": spk,
+        "Ring ID": ring_id,
+        "Destination": dest,
+        "Area": area,
+        "Authority Ruas Jalan": "Non Status",
+        "Instansi": "Pemerintah Daerah",
+        "Nama Ruas Jalan Implementasi": road_name,
+        "Panjang Ruas Jalan (Meter)": round(total_len, 2),
+        "Status Cable": "New Cable",
+        "Titik Koordinat Awal": start_dms,
+        "Titik Koordinat Akhir": end_dms,
+        "Status Survey": "Done Survey"
+    }
+    
+    return [segment]
 
 # Tampilan Antarmuka Streamlit
 st.title("🛣️ Otomatisasi Rekap Ruas Jalan KMZ")
@@ -297,7 +265,6 @@ if uploaded_files:
 if st.session_state.get("processed", False):
     st.success("✅ Selesai! File Master Excel berhasil dibuat.")
 
-  
     # Tombol Unduh Hasil
     st.download_button(
         label="📥 Unduh File Excel Master",
@@ -306,14 +273,14 @@ if st.session_state.get("processed", False):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-# Preview Tabel Master Excel (Dibuat Interaktif / Bisa Diklik)
-    st.subheader("📊 Preview Tabel Master Excel (Klik baris untuk fokus di peta)")
+    # Preview Tabel Master Excel (Dibuat Multi-Select dengan Centang)
+    st.subheader("📊 Preview Tabel Master Excel (Centang baris untuk menampilkan jalur di peta)")
     
-    # Menampilkan tabel interaktif dengan mode pilih baris
+    # Menampilkan tabel interaktif dengan mode centang banyak baris (multi-row)
     event = st.dataframe(
         st.session_state["df_master"],
         on_select="rerun",
-        selection_mode="single-row",
+        selection_mode="multi-row",
         use_container_width=True
     )
 
@@ -327,87 +294,87 @@ if st.session_state.get("processed", False):
         shutil.rmtree(temp_d, ignore_errors=True)
 
         if map_points and len(map_points) > 0:
-            # Cek apakah ada baris tabel yang sedang diklik/dipilih user
             selected_rows = event.selection.get("rows", [])
-            
-            if selected_rows:
-                # Jika ada baris yang diklik, ambil data dari baris tersebut
-                row_idx = selected_rows[0]
-                row_data = st.session_state["df_master"].iloc[row_idx]
-                
-                road_name = row_data["Nama Ruas Jalan Implementasi"]
-                
-                # Koordinat Awal (Titik A) & Akhir (Titik B)
-                start_lat, start_lon = map_points[0][1], map_points[0][0]
-                end_lat, end_lon = map_points[-1][1], map_points[-1][0]
-                
-                # Peta fokus ke titik tengah ruas jalan yang diklik
-                center_lat = (start_lat + end_lat) / 2
-                center_lon = (start_lon + end_lon) / 2
-                zoom_lvl = 16
-                
-                st.info(f"📍 **Fokus Ruas Jalan:** {road_name}")
-            else:
-                # Jika belum ada baris yang diklik, tampilkan seluruh jalur KMZ
-                center_lat = map_points[len(map_points)//2][1]
-                center_lon = map_points[len(map_points)//2][0]
-                zoom_lvl = 15
-                start_lat, start_lon = map_points[0][1], map_points[0][0]
-                end_lat, end_lon = map_points[-1][1], map_points[-1][0]
+            total_seg = len(st.session_state["df_master"])
+            pts_per_seg = max(1, len(map_points) // total_seg)
 
+            # Titik tengah peta bawaan
+            center_lat = map_points[len(map_points)//2][1]
+            center_lon = map_points[len(map_points)//2][0]
+            
             # Buat Objek Peta Folium
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_lvl)
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
             
-            # 1. Gambar Jalur Ruas Jalan (Garis Warna Ungu)
-            line_coords = [[pt[1], pt[0]] for pt in map_points]
-            folium.PolyLine(line_coords, color="#6c5ce7", weight=6, opacity=0.85, tooltip="Jalur Ruas Jalan KMZ").add_to(m)
-            
-            # 2. Pin Titik A (Awal - Hijau)
-            folium.Marker(
-                location=[start_lat, start_lon],
-                popup=f"<b>TITIK A (AWAL)</b><br>Lat: {start_lat}<br>Lon: {start_lon}",
-                tooltip="Titik A (Awal)",
-                icon=folium.Icon(color="green", icon="play")
-            ).add_to(m)
-            
-            # 3. Pin Titik B (Akhir - Merah)
-            folium.Marker(
-                location=[end_lat, end_lon],
-                popup=f"<b>TITIK B (AKHIR)</b><br>Lat: {end_lat}<br>Lon: {end_lon}",
-                tooltip="Titik B (Akhir)",
-                icon=folium.Icon(color="red", icon="flag")
-            ).add_to(m)
-            
-            # Tampilkan Peta
+            # Jika ada baris-baris yang dicentang pada tabel
+            if selected_rows:
+                selected_names = []
+                last_center_lat, last_center_lon = center_lat, center_lon
+                
+                # Loop untuk setiap baris yang dicentang user
+                for r_idx in selected_rows:
+                    row_data = st.session_state["df_master"].iloc[r_idx]
+                    selected_names.append(row_data["Nama Ruas Jalan Implementasi"])
+                    
+                    # Potong koordinat khusus untuk ruas yang dicentang
+                    idx_a = min(r_idx * pts_per_seg, len(map_points) - 1)
+                    idx_b = min((r_idx + 1) * pts_per_seg, len(map_points) - 1)
+                    if idx_a == idx_b and idx_b < len(map_points) - 1:
+                        idx_b += 1
+                        
+                    seg_points = map_points[idx_a : idx_b + 1]
+                    
+                    # Gambar garis ungu HANYA untuk ruas yang dicentang ini
+                    line_coords = [[pt[1], pt[0]] for pt in seg_points]
+                    folium.PolyLine(
+                        line_coords, 
+                        color="#6c5ce7", 
+                        weight=7, 
+                        opacity=0.9, 
+                        tooltip=f"Ruas: {row_data['Nama Ruas Jalan Implementasi']}"
+                    ).add_to(m)
+                    
+                    # Pin Titik Awal & Akhir Ruas
+                    s_lat, s_lon = seg_points[0][1], seg_points[0][0]
+                    e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
+                    
+                    folium.Marker(
+                        location=[s_lat, s_lon],
+                        popup=f"<b>Titik Awal</b><br>{row_data['Nama Ruas Jalan Implementasi']}",
+                        icon=folium.Icon(color="green", icon="play")
+                    ).add_to(m)
+                    
+                    folium.Marker(
+                        location=[e_lat, e_lon],
+                        popup=f"<b>Titik Akhir</b><br>{row_data['Nama Ruas Jalan Implementasi']}",
+                        icon=folium.Icon(color="red", icon="flag")
+                    ).add_to(m)
+                    
+                    last_center_lat = (s_lat + e_lat) / 2
+                    last_center_lon = (s_lon + e_lon) / 2
+                
+                m.location = [last_center_lat, last_center_lon]
+                st.info(f"📍 **Ruas Terpilih ({len(selected_rows)}):** {', '.join(selected_names)}")
+            else:
+                st.caption("💡 *Centang baris pada tabel di atas untuk memunculkan garis jalur ruas jalan di peta.*")
+
             st_folium(m, use_container_width=True, height=480)
     except Exception as e:
         st.warning(f"Gagal memuat preview peta: {e}")
+
 # --- KUSTOMISASI TAMPILAN CSS (TOMBOL UPLOAD UNGU) ---
 st.markdown("""
     <style>
-    /* 1. Mengubah warna tombol Browse files / Upload */
-    div[data-testid="stFileUploader"] button {
+    /* Mengubah warna tombol Browse files / Unggah File menjadi Ungu */
+    div[data-testid="stFileUploader"] section button {
         background-color: #6c5ce7 !important;
         color: white !important;
         border: none !important;
         border-radius: 8px !important;
+        font-weight: bold !important;
     }
-    
-    /* 2. Efek saat tombol di-hover (kursor di atas tombol) */
-    div[data-testid="stFileUploader"] button:hover {
-        background-color: #5b4bc4 !important;
+    div[data-testid="stFileUploader"] section button:hover {
+        background-color: #5a4bcf !important;
         color: white !important;
-    }
-    
-    /* 3. Mengubah warna ikon & teks petunjuk upload */
-    div[data-testid="stFileUploaderDropzone"] {
-        border: 2px dashed #6c5ce7 !important;
-        background-color: #f8f7ff !important;
-        border-radius: 10px !important;
-    }
-    
-    div[data-testid="stFileUploaderDropzone"] svg {
-        fill: #6c5ce7 !important;
     }
     </style>
 """, unsafe_allow_html=True)
