@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 def convert_dms_to_dd(dms_str):
-    """Mengubah format DMS (2°43'17.98"S, 102°54'36.1"E) ke Decimal Degrees."""
+    """Mengubah format DMS ke Decimal Degrees."""
     try:
         parts = dms_str.split(',')
         if len(parts) != 2:
@@ -57,7 +57,6 @@ def format_dd_to_dms(lat, lon):
     return f"{dd_to_dms_single(lat, True)}, {dd_to_dms_single(lon, False)}"
 
 def extract_kml_from_kmz_bytes(kmz_bytes):
-    """Mengekstrak file doc.kml dari data file KMZ di memori."""
     import tempfile
     temp_dir = tempfile.mkdtemp()
     kmz_path = os.path.join(temp_dir, "temp.kmz")
@@ -71,7 +70,6 @@ def extract_kml_from_kmz_bytes(kmz_bytes):
     return kml_path, temp_dir
 
 def parse_kml_all_linestrings(kml_path):
-    """Membaca seluruh koordinat jalur linestring dari file KML."""
     tree = ET.parse(kml_path)
     root = tree.getroot()
     ns = {'kml': 'http://www.opengis.net/kml/2.2'}
@@ -90,7 +88,6 @@ def parse_kml_all_linestrings(kml_path):
     return coordinates_points
 
 def reverse_geocode_photon(lat, lon):
-    """Layanan reverse geocoding cepat menggunakan Photon API OpenStreetMap."""
     try:
         url = f"https://photon.komoot.io/reverse?lon={lon}&lat={lat}"
         headers = {'User-Agent': 'KMZRoadAutomationApp/1.0'}
@@ -109,7 +106,6 @@ def reverse_geocode_photon(lat, lon):
     return "", "", "", ""
 
 def process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_text):
-    """Memproses satu file KMZ dan menguraikannya menjadi segmen laporan Excel."""
     kml_path, temp_dir = extract_kml_from_kmz_bytes(kmz_bytes)
     points = parse_kml_all_linestrings(kml_path)
     
@@ -119,7 +115,6 @@ def process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_text):
     if not points:
         return []
     
-    # Hitung total panjang jalur (pembagian kasar sederhana)
     from math import radians, cos, sin, asin, sqrt
     def haversine(lon1, lat1, lon2, lat2):
         lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
@@ -127,7 +122,7 @@ def process_single_kmz(kmz_bytes, spk, ring_id, area_name, status_text):
         dlat = lat2 - lat1 
         a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
         c = 2 * asin(sqrt(a)) 
-        r = 6371000 # Radius bumi dalam meter
+        r = 6371000 
         return c * r
 
     total_len = 0.0
@@ -216,76 +211,74 @@ if uploaded_files:
                 "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
             ]
             df_master = pd.DataFrame(all_master_data, columns=columns)
-
-            # Export ke Excel via Memory Buffer
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_master.to_excel(writer, index=False, sheet_name='Master Data')
-                ws = writer.sheets['Master Data']
-                ws.views.sheetView[0].showGridLines = True
-                
-                hdr_fill = openpyxl.styles.PatternFill(start_color="003366", end_color="003366", fill_type="solid")
-                hdr_font = openpyxl.styles.Font(name="Arial", size=10, bold=True, color="FFFFFF")
-                border = openpyxl.styles.Border(
-                    left=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                    right=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                    top=openpyxl.styles.Side(style='thin', color='D9D9D9'),
-                    bottom=openpyxl.styles.Side(style='thin', color='D9D9D9')
-                )
-                
-                for col_num in range(1, 13):
-                    cell = ws.cell(row=1, column=col_num)
-                    cell.fill, cell.font, cell.border = hdr_fill, hdr_font, border
-                    cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
-                    
-                for row in range(2, len(df_master) + 2):
-                    for col in range(1, 13):
-                        cell = ws.cell(row=row, column=col)
-                        cell.border = border
-                        if col == 8:
-                            cell.number_format = '#,##0.00'
-                            cell.alignment = openpyxl.styles.Alignment(horizontal="right")
-                        elif col in [1, 2, 5, 9, 10, 11, 12]:
-                            cell.alignment = openpyxl.styles.Alignment(horizontal="center")
-                        else:
-                            cell.alignment = openpyxl.styles.Alignment(horizontal="left")
-                            
-                widths = {'A':10, 'B':16, 'C':15, 'D':22, 'E':20, 'F':25, 'G':35, 'H':25, 'I':15, 'J':30, 'K':30, 'L':18}
-                for col_letter, width in widths.items():
-                    ws.column_dimensions[col_letter].width = width
-
-            output.seek(0)
-            
-            # Simpan data ke memori sementara (session_state) agar tidak ter-reset saat klik tombol unduh
             st.session_state["df_master"] = df_master
-            st.session_state["excel_bytes"] = output.getvalue()
             st.session_state["processed"] = True
 
 # Tampilkan Hasil Pemrosesan jika data tersimpan di session_state
 if st.session_state.get("processed", False):
     st.success("✅ Selesai! File Master Excel berhasil dibuat.")
 
-    # Tombol Unduh Hasil
-    st.download_button(
-        label="📥 Unduh File Excel Master",
-        data=st.session_state["excel_bytes"],
-        file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # TABEL EDIT LANGSUNG
+    st.subheader("📊 Edit Tabel Master Excel (Klik sel untuk mengubah nama jalan)")
+    st.caption("💡 *Nama jalan di bawah bisa langsung diubah. Perubahan nama akan otomatis ter-update di Peta dan File Excel.*")
 
-    # Preview Tabel Master Excel (Dibuat Multi-Select dengan Centang)
-    st.subheader("📊 Preview Tabel Master Excel (Centang baris untuk menampilkan jalur di peta)")
-    
-    # Menampilkan tabel interaktif dengan mode centang banyak baris (multi-row)
-    event = st.dataframe(
+    edited_df = st.data_editor(
         st.session_state["df_master"],
-        on_select="rerun",
-        selection_mode="multi-row",
-        use_container_width=True
+        num_rows="dynamic",
+        use_container_width=True,
+        key="master_editor"
+    )
+    st.session_state["df_master"] = edited_df
+
+    # Export ke Excel via Memory Buffer
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        edited_df.to_excel(writer, index=False, sheet_name='Master Data')
+        ws = writer.sheets['Master Data']
+        ws.views.sheetView[0].showGridLines = True
+        
+        hdr_fill = openpyxl.styles.PatternFill(start_color="003366", end_color="003366", fill_type="solid")
+        hdr_font = openpyxl.styles.Font(name="Arial", size=10, bold=True, color="FFFFFF")
+        border = openpyxl.styles.Border(
+            left=openpyxl.styles.Side(style='thin', color='D9D9D9'),
+            right=openpyxl.styles.Side(style='thin', color='D9D9D9'),
+            top=openpyxl.styles.Side(style='thin', color='D9D9D9'),
+            bottom=openpyxl.styles.Side(style='thin', color='D9D9D9')
+        )
+        
+        for col_num in range(1, 13):
+            cell = ws.cell(row=1, column=col_num)
+            cell.fill, cell.font, cell.border = hdr_fill, hdr_font, border
+            cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+            
+        for row in range(2, len(edited_df) + 2):
+            for col in range(1, 13):
+                cell = ws.cell(row=row, column=col)
+                cell.border = border
+                if col == 8:
+                    cell.number_format = '#,##0.00'
+                    cell.alignment = openpyxl.styles.Alignment(horizontal="right")
+                elif col in [1, 2, 5, 9, 10, 11, 12]:
+                    cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+                else:
+                    cell.alignment = openpyxl.styles.Alignment(horizontal="left")
+                    
+        widths = {'A':10, 'B':16, 'C':15, 'D':22, 'E':20, 'F':25, 'G':35, 'H':25, 'I':15, 'J':30, 'K':30, 'L':18}
+        for col_letter, width in widths.items():
+            ws.column_dimensions[col_letter].width = width
+
+    output.seek(0)
+
+    st.download_button(
+        label="📥 Unduh File Excel Master (Hasil Edit)",
+        data=output.getvalue(),
+        file_name=f"Rekap_Master_Ruas_Jalan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
     )
 
-    # Preview Peta Interaktif (Folium)
-    st.subheader("🗺️ Preview Peta Ruas Jalan & Titik Koordinat")
+    # PREVIEW PETA DENGAN LABEL NAMA JALAN OTOMATIS & MULTI-LAYER
+    st.subheader("🗺️ Preview Peta Ruas Jalan Interaktif (Label Nama Jalan Aktif)")
     try:
         uploaded_files[0].seek(0)
         kml_p, temp_d = extract_kml_from_kmz_bytes(uploaded_files[0].read())
@@ -294,77 +287,71 @@ if st.session_state.get("processed", False):
         shutil.rmtree(temp_d, ignore_errors=True)
 
         if map_points and len(map_points) > 0:
-            selected_rows = event.selection.get("rows", [])
-            total_seg = len(st.session_state["df_master"])
+            total_seg = len(edited_df)
             pts_per_seg = max(1, len(map_points) // total_seg)
 
-            # Titik tengah peta bawaan
             center_lat = map_points[len(map_points)//2][1]
             center_lon = map_points[len(map_points)//2][0]
             
-            # Buat Objek Peta Folium
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=16, tiles=None)
             
-            # Jika ada baris-baris yang dicentang pada tabel
-            if selected_rows:
-                selected_names = []
-                last_center_lat, last_center_lon = center_lat, center_lon
-                
-                # Loop untuk setiap baris yang dicentang user
-                for r_idx in selected_rows:
-                    row_data = st.session_state["df_master"].iloc[r_idx]
-                    selected_names.append(row_data["Nama Ruas Jalan Implementasi"])
-                    
-                    # Potong koordinat khusus untuk ruas yang dicentang
-                    idx_a = min(r_idx * pts_per_seg, len(map_points) - 1)
-                    idx_b = min((r_idx + 1) * pts_per_seg, len(map_points) - 1)
-                    if idx_a == idx_b and idx_b < len(map_points) - 1:
-                        idx_b += 1
-                        
-                    seg_points = map_points[idx_a : idx_b + 1]
-                    
-                    # Gambar garis ungu HANYA untuk ruas yang dicentang ini
-                    line_coords = [[pt[1], pt[0]] for pt in seg_points]
-                    folium.PolyLine(
-                        line_coords, 
-                        color="#6c5ce7", 
-                        weight=7, 
-                        opacity=0.9, 
-                        tooltip=f"Ruas: {row_data['Nama Ruas Jalan Implementasi']}"
-                    ).add_to(m)
-                    
-                    # Pin Titik Awal & Akhir Ruas
-                    s_lat, s_lon = seg_points[0][1], seg_points[0][0]
-                    e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
-                    
-                    folium.Marker(
-                        location=[s_lat, s_lon],
-                        popup=f"<b>Titik Awal</b><br>{row_data['Nama Ruas Jalan Implementasi']}",
-                        icon=folium.Icon(color="green", icon="play")
-                    ).add_to(m)
-                    
-                    folium.Marker(
-                        location=[e_lat, e_lon],
-                        popup=f"<b>Titik Akhir</b><br>{row_data['Nama Ruas Jalan Implementasi']}",
-                        icon=folium.Icon(color="red", icon="flag")
-                    ).add_to(m)
-                    
-                    last_center_lat = (s_lat + e_lat) / 2
-                    last_center_lon = (s_lon + e_lon) / 2
-                
-                m.location = [last_center_lat, last_center_lon]
-                st.info(f"📍 **Ruas Terpilih ({len(selected_rows)}):** {', '.join(selected_names)}")
-            else:
-                st.caption("💡 *Centang baris pada tabel di atas untuk memunculkan garis jalur ruas jalan di peta.*")
+            # Layer Peta pilihan (Google Satelit & Hybrid)
+            folium.TileLayer('OpenStreetMap', name='Peta Jalan Standar').add_to(m)
+            folium.TileLayer(
+                tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+                attr='Google Hybrid',
+                name='Satelit + Teks Nama Jalan (Google Earth)'
+            ).add_to(m)
 
-            st_folium(m, use_container_width=True, height=480)
+            for r_idx in range(len(edited_df)):
+                row_data = edited_df.iloc[r_idx]
+                road_name = row_data["Nama Ruas Jalan Implementasi"]
+                road_len = row_data["Panjang Ruas Jalan (Meter)"]
+                
+                idx_a = min(r_idx * pts_per_seg, len(map_points) - 1)
+                idx_b = min((r_idx + 1) * pts_per_seg, len(map_points) - 1)
+                if idx_a == idx_b and idx_b < len(map_points) - 1:
+                    idx_b += 1
+                    
+                seg_points = map_points[idx_a : idx_b + 1]
+                line_coords = [[pt[1], pt[0]] for pt in seg_points]
+                
+                # Garis Ungu dengan Tooltip Label Nama Jalan Permanen & Hover Text
+                folium.PolyLine(
+                    line_coords, 
+                    color="#6c5ce7", 
+                    weight=7, 
+                    opacity=0.9,
+                    popup=f"<b>Ruas:</b> {road_name}<br><b>Panjang:</b> {road_len} m",
+                    tooltip=folium.Tooltip(f"<b>{road_name}</b> ({road_len} m)", permanent=True)
+                ).add_to(m)
+                
+                # Pin Titik Awal & Akhir
+                s_lat, s_lon = seg_points[0][1], seg_points[0][0]
+                e_lat, e_lon = seg_points[-1][1], seg_points[-1][0]
+                
+                folium.Marker(
+                    location=[s_lat, s_lon],
+                    popup=f"<b>Titik Awal</b><br>{road_name}",
+                    tooltip=f"Start: {road_name}",
+                    icon=folium.Icon(color="green", icon="play")
+                ).add_to(m)
+                
+                folium.Marker(
+                    location=[e_lat, e_lon],
+                    popup=f"<b>Titik Akhir</b><br>{road_name}",
+                    tooltip=f"End: {road_name}",
+                    icon=folium.Icon(color="red", icon="flag")
+                ).add_to(m)
+
+            folium.LayerControl(position='topright').add_to(m)
+            st_folium(m, use_container_width=True, height=520)
     except Exception as e:
         st.warning(f"Gagal memuat preview peta: {e}")
 
-# --- KUSTOMISASI TAMPILAN CSS (TOMBOL UPLOAD UNGU) ---
+# --- KUSTOMISASI TAMPILAN CSS ---
 st.markdown("""
     <style>
-    /* Mengubah warna tombol Browse files / Unggah File menjadi Ungu */
     div[data-testid="stFileUploader"] section button {
         background-color: #6c5ce7 !important;
         color: white !important;
