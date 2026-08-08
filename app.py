@@ -265,7 +265,7 @@ if st.session_state.get("processed", False):
         type="primary"
     )
 
-    # PREVIEW TABEL CENTANG MULTI-ROW (DAPAT DICENTANG BANYAK)
+    # PREVIEW TABEL CENTANG MULTI-ROW
     st.subheader("📊 Preview Tabel Master Excel (Centang baris untuk menampilkan jalur di peta)")
     
     event = st.dataframe(
@@ -275,7 +275,7 @@ if st.session_state.get("processed", False):
         use_container_width=True
     )
 
-    # PREVIEW PETA INTERAKTIF
+    # PREVIEW PETA INTERAKTIF DENGAN POPUP KEMBALI
     st.subheader("🗺️ Preview Peta Ruas Jalan Interaktif")
     try:
         uploaded_files[0].seek(0)
@@ -320,13 +320,14 @@ if st.session_state.get("processed", False):
                     seg_points = map_points[idx_a : idx_b + 1]
                     line_coords = [[pt[1], pt[0]] for pt in seg_points]
                     
-                    # Garis Ungu HANYA untuk ruas yang dicentang
+                    # Garis Ungu DENGAN POPUP POPUP TEKS / TOOLTIP PERMANEN
                     folium.PolyLine(
                         line_coords, 
                         color="#6c5ce7", 
                         weight=7, 
                         opacity=0.9, 
-                        tooltip=f"<b>{road_name}</b> ({road_len} m)"
+                        popup=folium.Popup(f"<b>Ruas Jalan:</b> {road_name}<br><b>Panjang:</b> {road_len} m", max_width=300),
+                        tooltip=folium.Tooltip(f"<b>{road_name}</b> ({road_len} m)", permanent=True)
                     ).add_to(m)
                     
                     # Pin Titik Awal & Akhir
@@ -335,13 +336,15 @@ if st.session_state.get("processed", False):
                     
                     folium.Marker(
                         location=[s_lat, s_lon],
-                        tooltip=f"Titik Awal: {road_name}",
+                        popup=f"<b>TITIK A (AWAL)</b><br>{road_name}",
+                        tooltip=f"Start: {road_name}",
                         icon=folium.Icon(color="green", icon="play")
                     ).add_to(m)
                     
                     folium.Marker(
                         location=[e_lat, e_lon],
-                        tooltip=f"Titik Akhir: {road_name}",
+                        popup=f"<b>TITIK B (AKHIR)</b><br>{road_name}",
+                        tooltip=f"End: {road_name}",
                         icon=folium.Icon(color="red", icon="flag")
                     ).add_to(m)
                     
