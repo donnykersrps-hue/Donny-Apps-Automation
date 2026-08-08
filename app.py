@@ -242,14 +242,14 @@ if uploaded_files:
 
     if all_master_data:
         columns = [
-            "SPK", "Ring ID", "Destination", "Area", 
-            "Authority Ruas Jalan", "Instansi", "Nama Ruas Jalan Implementasi", 
-            "Panjang Ruas Jalan (Meter)", "Status Cable", 
-            "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
+        "SPK", "Ring ID", "Destination", "Area", 
+        "Authority Ruas Jalan", "Instansi", "Nama Ruas Jalan Implementasi", 
+        "Panjang Ruas Jalan (Meter)", "Status Cable", 
+        "Titik Koordinat Awal", "Titik Koordinat Akhir", "Status Survey"
         ]
         df_master = pd.DataFrame(all_master_data, columns=columns)
         if "Pilih Peta" not in df_master.columns:
-            df_master.insert(0, "Pilih Peta", True)
+        df_master.insert(0, "Pilih Peta", True)
 
         st.session_state["df_master"] = df_master
         st.session_state["all_map_lines"] = all_map_lines
